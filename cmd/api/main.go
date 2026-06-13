@@ -1,25 +1,69 @@
 package main
 
 import (
-	_ "github.com/go-chi/chi/v5"
-	_ "github.com/jackc/pgx/v5"
-	_ "github.com/jackc/pgx/v5/pgxpool"
-	_ "github.com/redis/go-redis/v9"
-	_ "github.com/go-sql-driver/mysql"
-	_ "github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/postgres"
-	_ "github.com/golang-migrate/migrate/v4/source/file"
-	_ "github.com/robfig/cron/v3"
-	_ "github.com/spf13/viper"
-	_ "github.com/rs/zerolog"
-	_ "github.com/google/uuid"
-	_ "gopkg.in/yaml.v3"
-	_ "github.com/AlecAivazis/survey/v2"
-	_ "github.com/stretchr/testify"
-	_ "github.com/testcontainers/testcontainers-go"
-	_ "github.com/testcontainers/testcontainers-go/modules/postgres"
-	_ "github.com/testcontainers/testcontainers-go/modules/mysql"
-	_ "github.com/prometheus/client_golang/prometheus"
+	"context"
+	"log"
+	"net/http"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/yourorg/sso-gateway/internal/api"
+	"github.com/yourorg/sso-gateway/internal/apikey"
+	"github.com/yourorg/sso-gateway/internal/config"
+	"github.com/yourorg/sso-gateway/internal/db"
+	"github.com/yourorg/sso-gateway/internal/karyawan"
+	"github.com/yourorg/sso-gateway/internal/logger"
+	"github.com/yourorg/sso-gateway/internal/redisx"
+	"github.com/yourorg/sso-gateway/internal/server"
 )
 
-func main() {}
+func main() {
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	logger.Init(cfg.LogLevel)
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	pool, err := db.NewPool(ctx, cfg.PostgresDSN)
+	if err != nil {
+		log.Fatalf("postgres: %v", err)
+	}
+	defer pool.Close()
+
+	rc, err := redisx.NewClient(ctx, cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
+	if err != nil {
+		log.Fatalf("redis: %v", err)
+	}
+	defer rc.Close()
+
+	repo := karyawan.NewRepo(pool)
+	ak := apikey.NewStore(pool)
+	h := api.NewHandlers(repo)
+
+	srv := server.New(server.Config{
+		Addr:            cfg.HTTPAddr,
+		APIRateLimitRPM: cfg.APIRateLimitPerMin,
+	}, server.Deps{API: h, APIKeys: ak, Redis: rc})
+
+	httpSrv := &http.Server{
+		Addr:              cfg.HTTPAddr,
+		Handler:           srv.Router(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	go func() {
+		logger.L().Info().Str("addr", cfg.HTTPAddr).Msg("api listening")
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("http: %v", err)
+		}
+	}()
+
+	<-ctx.Done()
+	logger.L().Info().Msg("api shutting down")
+	shutdownCtx, sCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer sCancel()
+	_ = httpSrv.Shutdown(shutdownCtx)
+}
