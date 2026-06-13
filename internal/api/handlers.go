@@ -2,13 +2,19 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"strconv"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/yourorg/sso-gateway/internal/karyawan"
+)
+
+const (
+	defaultLimit = 50
+	maxLimit     = 500
 )
 
 type Handlers struct {
@@ -62,6 +68,15 @@ type listResponse struct {
 	Offset int            `json:"offset"`
 }
 
+// clampLimit mirrors the same clamp applied in the repo so the response's
+// "limit" field always matches the actual page size used.
+func clampLimit(in int) int {
+	if in <= 0 || in > maxLimit {
+		return defaultLimit
+	}
+	return in
+}
+
 func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit, _ := strconv.Atoi(q.Get("limit"))
@@ -83,6 +98,7 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 
 	rows, total, err := h.repo.List(r.Context(), f)
 	if err != nil {
+		log.Printf("api repo List: %v", err)
 		writeErr(w, http.StatusInternalServerError, "query_error")
 		return
 	}
@@ -90,14 +106,10 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 	for _, k := range rows {
 		out = append(out, toView(k))
 	}
-	effLimit := limit
-	if effLimit <= 0 || effLimit > 500 {
-		effLimit = 50
-	}
 	writeJSON(w, http.StatusOK, listResponse{
 		Data:   out,
 		Total:  total,
-		Limit:  effLimit,
+		Limit:  clampLimit(limit),
 		Offset: offset,
 	})
 }
@@ -110,7 +122,12 @@ func (h *Handlers) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	k, err := h.repo.GetByNIK(r.Context(), nik)
 	if err != nil {
-		writeErr(w, http.StatusNotFound, "not_found")
+		if errors.Is(err, karyawan.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, "not_found")
+			return
+		}
+		log.Printf("api repo GetByNIK(%s): %v", nik, err)
+		writeErr(w, http.StatusInternalServerError, "query_error")
 		return
 	}
 	writeJSON(w, http.StatusOK, toView(*k))
@@ -125,5 +142,3 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func writeErr(w http.ResponseWriter, status int, code string) {
 	writeJSON(w, status, map[string]string{"error": code})
 }
-
-var _ = time.Now
