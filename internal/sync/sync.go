@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/yourorg/sso-gateway/internal/karyawan"
@@ -117,9 +119,12 @@ func (s *Syncer) SyncKaryawan(ctx context.Context) (int, error) {
 func (s *Syncer) readWatermark(ctx context.Context) (time.Time, error) {
 	var wm *time.Time
 	err := s.pool.QueryRow(ctx, "SELECT watermark FROM sync_state WHERE resource = $1", s.resource).Scan(&wm)
-	if err != nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		// No row yet — start from epoch.
 		return time.Unix(0, 0).UTC(), nil
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("read watermark: %w", err)
 	}
 	if wm == nil {
 		return time.Unix(0, 0).UTC(), nil
@@ -128,17 +133,23 @@ func (s *Syncer) readWatermark(ctx context.Context) (time.Time, error) {
 }
 
 func (s *Syncer) failRun(ctx context.Context, runID uuid.UUID, cause error) (int, error) {
-	_, _ = s.pool.Exec(ctx,
+	if _, err := s.pool.Exec(ctx,
 		`UPDATE sync_runs SET finished_at = $1, status = 'failed', error = $2 WHERE id = $3`,
-		time.Now().UTC(), cause.Error(), runID)
-	_, _ = s.pool.Exec(ctx,
+		time.Now().UTC(), cause.Error(), runID); err != nil {
+		// Surface the secondary failure so a stuck "running" row is at least
+		// visible in logs even when the DB is partially unavailable.
+		cause = fmt.Errorf("%w (also: finalize sync_runs: %v)", cause, err)
+	}
+	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO sync_state (resource, last_run_at, last_status, last_error)
 		 VALUES ($1, $2, 'failed', $3)
 		 ON CONFLICT (resource) DO UPDATE SET
 		   last_run_at = EXCLUDED.last_run_at,
 		   last_status = EXCLUDED.last_status,
 		   last_error  = EXCLUDED.last_error`,
-		s.resource, time.Now().UTC(), cause.Error())
+		s.resource, time.Now().UTC(), cause.Error()); err != nil {
+		cause = fmt.Errorf("%w (also: update sync_state: %v)", cause, err)
+	}
 	return 0, cause
 }
 
