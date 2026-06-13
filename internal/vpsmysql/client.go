@@ -51,6 +51,13 @@ func NewClient(ctx context.Context, dsn string, batchSize int) (*Client, error) 
 
 func (c *Client) Close() error { return c.db.Close() }
 
+// SetBatchSize updates the per-fetch LIMIT. Implements syncpkg.BatchSizer.
+func (c *Client) SetBatchSize(n int) {
+	if n > 0 {
+		c.batchSize = n
+	}
+}
+
 // BuildDSN constructs a MySQL DSN from structured fields.
 func BuildDSN(host string, port int, database, user, password string) string {
 	return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&readTimeout=30s&loc=Local",

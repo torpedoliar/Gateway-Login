@@ -28,10 +28,26 @@ type Syncer struct {
 	pool     *pgxpool.Pool
 	src      Source
 	resource string
+	batch    int
 }
 
-func New(pool *pgxpool.Pool, src Source, _ int) *Syncer {
-	return &Syncer{pool: pool, src: src, resource: "karyawan"}
+// New constructs a Syncer. batchSize is the per-pull LIMIT; if src implements
+// BatchSizer, New passes batchSize to the source so each Fetch* call honors
+// the operator's SYNC_BATCH_SIZE configuration.
+func New(pool *pgxpool.Pool, src Source, batchSize int) *Syncer {
+	if batchSize <= 0 {
+		batchSize = 500
+	}
+	if bs, ok := src.(BatchSizer); ok {
+		bs.SetBatchSize(batchSize)
+	}
+	return &Syncer{pool: pool, src: src, resource: "karyawan", batch: batchSize}
+}
+
+// BatchSizer is an optional interface a Source may implement to receive the
+// configured batch size. vpsmysql.Client implements it; test fakes do not.
+type BatchSizer interface {
+	SetBatchSize(int)
 }
 
 func (s *Syncer) SyncKaryawan(ctx context.Context) (int, error) {
