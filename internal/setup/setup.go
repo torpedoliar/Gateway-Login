@@ -23,14 +23,9 @@ import (
 	"github.com/yourorg/sso-gateway/internal/vpsmysql"
 )
 
-// apiKeyPrefix is prepended to every generated key so callers can recognize
-// "this is a gateway API key" at a glance.
 const apiKeyPrefix = "ssogw_"
 
 // Question is a minimal survey-like field the Prompter renders.
-// We intentionally mirror survey.Question's shape (Name, Prompt, Default)
-// so the real survey library can satisfy the Prompter, but tests can
-// provide a fake without importing survey's interactive machinery.
 type Question struct {
 	Name    string
 	Prompt  string
@@ -44,8 +39,6 @@ type Prompter interface {
 }
 
 // SurveyPrompter is a Prompter backed by github.com/AlecAivazis/survey/v2.
-// It is the production implementation; the fakePrompter in tests lets
-// unit tests run without a TTY.
 type SurveyPrompter struct{}
 
 // Ask converts setup.Question to survey.Question and runs them.
@@ -77,27 +70,56 @@ func GenerateAPIKey() (string, error) {
 	return apiKeyPrefix + base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// HashAPIKey returns the hex-encoded SHA-256 of the plaintext key, which
-// is what the database stores and what callers compare against.
+// HashAPIKey returns the hex-encoded SHA-256 of the plaintext key.
 func HashAPIKey(plain string) string {
 	sum := sha256.Sum256([]byte(plain))
 	return hex.EncodeToString(sum[:])
 }
 
-// RunPromptFlow drives the interactive configuration flow:
+// ReadMasterKeyFromDotenv parses a dotenv-style file and returns the
+// value of GATEWAY_MASTER_KEY, or "" if not present.
+func ReadMasterKeyFromDotenv(path string) (string, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	for _, line := range splitLines(b) {
+		const prefix = "GATEWAY_MASTER_KEY="
+		if len(line) > len(prefix) && line[:len(prefix)] == prefix {
+			return line[len(prefix):], nil
+		}
+	}
+	return "", nil
+}
+
+func splitLines(b []byte) []string {
+	var out []string
+	start := 0
+	for i, c := range b {
+		if c == '\n' {
+			out = append(out, string(b[start:i]))
+			start = i + 1
+		}
+	}
+	if start < len(b) {
+		out = append(out, string(b[start:]))
+	}
+	return out
+}
+
+// RunPromptFlow drives the interactive configuration flow.
 //
-//  1. Asks the operator for VPS host/port/db/user/password (and an optional
-//     API key; empty => generate one).
-//  2. Connects to the VPS MySQL via vpsmysql.NewClient to validate the
-//     credentials. If this fails, the flow aborts with the connection error
-//     so the operator can correct the inputs.
-//  3. Ensures a master key (generates one if existingMasterKey is empty)
-//     and encrypts the VPS password with it.
-//  4. Writes the populated store.Config to configPath via store.Save and
-//     appends/overwrites GATEWAY_MASTER_KEY in dotenvPath with mode 0600.
-//
-// Returns the populated *store.Config, the plaintext API key (caller shows
-// it once), the master key as base64, and any error.
+//  1. Asks for VPS host/port/db/user/password (and optional API key).
+//  2. Validates VPS connectivity. Failure aborts before any FS write.
+//  3. Resolves the master key: reuses the value from dotenvPath if present
+//     (so re-running setup does not invalidate the previous key), else
+//     uses existingMasterKey, else generates a fresh one.
+//  4. Writes .env FIRST and config.yaml SECOND. If config.yaml write fails,
+//     the .env still has the same master key as before, so a retry can
+//     succeed without bricking the previous encryption.
 func RunPromptFlow(
 	ctx context.Context,
 	p Prompter,
@@ -134,8 +156,7 @@ func RunPromptFlow(
 		return nil, "", "", fmt.Errorf("invalid port %q: %w", portStr, err)
 	}
 
-	// Test the connection before persisting any secrets so the operator
-	// can correct bad inputs without rotating the master key.
+	// Validate VPS connectivity BEFORE any FS write.
 	dsn := vpsmysql.BuildDSN(host, port, database, username, password)
 	vps, err := vpsmysql.NewClient(ctx, dsn, 1)
 	if err != nil {
@@ -150,8 +171,16 @@ func RunPromptFlow(
 		}
 	}
 
-	// Resolve master key.
+	// Resolve master key. Reuse the on-disk value if present so a re-run
+	// after a transient failure does not rotate the key and break the
+	// previous encryption. Existing config.yaml is loaded and merged with
+	// the new fields so operator-added API keys / sync.interval survive.
 	masterB64 := existingMasterKey
+	if masterB64 == "" {
+		if v, err := ReadMasterKeyFromDotenv(dotenvPath); err == nil && v != "" {
+			masterB64 = v
+		}
+	}
 	var masterKey []byte
 	if masterB64 == "" {
 		masterKey, err = crypto.NewRandomKey()
@@ -162,47 +191,67 @@ func RunPromptFlow(
 	} else {
 		masterKey, err = crypto.Base64ToKey(masterB64)
 		if err != nil {
-			return nil, "", "", fmt.Errorf("decode existing master key: %w", err)
+			return nil, "", "", fmt.Errorf("decode master key: %w", err)
 		}
 	}
 
-	cfg := &store.Config{
-		VPS: store.VPSConfig{
-			Host:     host,
-			Port:     port,
-			Database: database,
-			Username: username,
-		},
-		API: store.APIConfig{
-			Keys: []store.APIKeyEntry{{
-				ID:          "default",
-				KeyHash:     HashAPIKey(apiKeyPlain),
-				Description: "generated by setup",
-			}},
-		},
-		Sync: store.SyncConfig{
-			Interval:        "5m",
-			BatchSize:       500,
-			WatermarkColumn: "updated_at",
-		},
+	// Load existing config and merge so re-runs preserve any extra API keys
+	// or sync settings the operator has hand-edited.
+	cfg, _ := store.Load(configPath)
+	if cfg == nil {
+		cfg = &store.Config{}
+	}
+	cfg.VPS = store.VPSConfig{
+		Host:     host,
+		Port:     port,
+		Database: database,
+		Username: username,
 	}
 	if err := cfg.VPS.SetEncryptedPassword(password, masterKey); err != nil {
 		return nil, "", "", fmt.Errorf("encrypt vps password: %w", err)
 	}
-
-	if err := store.Save(configPath, cfg); err != nil {
-		return nil, "", "", fmt.Errorf("save config: %w", err)
+	// Replace the "default" key if present, otherwise append. Other keys
+	// the operator added (e.g. via hand-edit) are preserved.
+	newKey := store.APIKeyEntry{
+		ID:          "default",
+		KeyHash:     HashAPIKey(apiKeyPlain),
+		Description: "generated by setup",
+	}
+	replaced := false
+	for i, k := range cfg.API.Keys {
+		if k.ID == "default" {
+			cfg.API.Keys[i] = newKey
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		cfg.API.Keys = append(cfg.API.Keys, newKey)
+	}
+	if cfg.Sync.Interval == "" {
+		cfg.Sync.Interval = "5m"
+	}
+	if cfg.Sync.BatchSize == 0 {
+		cfg.Sync.BatchSize = 500
+	}
+	if cfg.Sync.WatermarkColumn == "" {
+		cfg.Sync.WatermarkColumn = "updated_at"
 	}
 
+	// Write .env FIRST. If config.yaml write then fails, the master key on
+	// disk still matches what the operator's deployed api/sync containers
+	// already loaded; a retry uses the same key and succeeds.
 	if err := writeDotenv(dotenvPath, masterB64); err != nil {
 		return nil, "", "", fmt.Errorf("write dotenv: %w", err)
+	}
+	if err := store.Save(configPath, cfg); err != nil {
+		return nil, "", "", fmt.Errorf("save config: %w", err)
 	}
 
 	return cfg, apiKeyPlain, masterB64, nil
 }
 
 // writeDotenv writes GATEWAY_MASTER_KEY=<base64>\n to path with mode 0600.
-// It creates the parent directory if needed.
 func writeDotenv(path, masterB64 string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
