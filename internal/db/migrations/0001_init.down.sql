@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS api_keys;
+DROP TABLE IF EXISTS sync_runs;
+DROP TABLE IF EXISTS sync_state;
+DROP TABLE IF EXISTS karyawan;
