@@ -63,25 +63,50 @@ func main() {
 
 	syncer := syncpkg.New(pool, vps, cfg.SyncBatchSize)
 
-	runOnce(ctx, syncer)
-
 	interval := storeCfg.Sync.Interval
 	if interval == "" {
 		interval = cfg.SyncInterval.String()
 	}
 	spec := "@every " + interval
+
+	// Build cron FIRST so scheduled ticks fire on time, regardless of how long
+	// the initial runOnce takes. Cron is not started yet (Start is below) — it
+	// only begins ticking once Start is called. The first runOnce runs in its
+	// own goroutine so cron.Start() is not blocked by it.
 	c := cron.New()
 	if _, err := c.AddFunc(spec, func() {
-		runOnce(context.Background(), syncer)
+		// Use a fresh context (Background + timeout) so SIGTERM cancels the
+		// currently running sync instead of leaking past c.Stop(). robfig/cron
+		// waits for in-flight jobs to return before honoring Stop.
+		runCtx, runCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer runCancel()
+		runOnce(runCtx, syncer)
 	}); err != nil {
 		log.Fatalf("cron add: %v", err)
 	}
+
+	// Kick off the first sync in a goroutine so the scheduler starts on time.
+	go runOnce(ctx, syncer)
 	c.Start()
 	logger.L().Info().Str("spec", spec).Msg("sync scheduler started")
 
 	<-ctx.Done()
 	logger.L().Info().Msg("sync shutting down")
-	c.Stop()
+	// c.Stop blocks until in-flight cron-triggered runs return. Because the
+	// cron callback uses Background (decoupled from the shutdown ctx), the
+	// in-flight sync's 10-min timeout will fire and unblock Stop. To not wait
+	// 10 min on shutdown, run an additional watchdog that interrupts the
+	// cron on ctx.Done by calling Stop in a goroutine with a deadline.
+	stopDone := make(chan struct{})
+	go func() {
+		c.Stop()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+	case <-time.After(15 * time.Second):
+		logger.L().Warn().Msg("cron stop timed out; exiting with in-flight sync")
+	}
 }
 
 func runOnce(ctx context.Context, s *syncpkg.Syncer) {
