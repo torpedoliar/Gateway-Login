@@ -27,6 +27,12 @@ func runInitialSync(ctx context.Context, pool *pgxpool.Pool, storeCfg *store.Con
 	if err != nil {
 		return fmt.Errorf("decrypt vps password: %w", err)
 	}
+	// Use the operator's configured batch size (default 500) instead of
+	// hardcoding — keeps setup in sync with svc-sync's behavior.
+	batch := storeCfg.Sync.BatchSize
+	if batch <= 0 {
+		batch = 500
+	}
 	dsn := vpsmysql.BuildDSN(
 		storeCfg.VPS.Host,
 		storeCfg.VPS.Port,
@@ -34,17 +40,17 @@ func runInitialSync(ctx context.Context, pool *pgxpool.Pool, storeCfg *store.Con
 		storeCfg.VPS.Username,
 		password,
 	)
-	vps, err := vpsmysql.NewClient(ctx, dsn, 500)
+	vps, err := vpsmysql.NewClient(ctx, dsn, batch)
 	if err != nil {
 		return fmt.Errorf("vps mysql: %w", err)
 	}
 	defer vps.Close()
 
-	s := syncpkg.New(pool, vps, 500)
+	s := syncpkg.New(pool, vps, batch)
 	rows, err := s.SyncKaryawan(ctx)
 	if err != nil {
 		return fmt.Errorf("sync: %w", err)
 	}
-	_ = rows
+	fmt.Printf("Initial sync: %d rows upserted\n", rows)
 	return nil
 }

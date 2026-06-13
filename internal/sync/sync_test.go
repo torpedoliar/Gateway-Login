@@ -2,7 +2,6 @@ package syncpkg
 
 import (
 	"context"
-	"database/sql"
 	"os"
 	"testing"
 	"time"
@@ -66,5 +65,3 @@ func TestSyncKaryawan_NoRows(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, n)
 }
-
-var _ = sql.ErrNoRows

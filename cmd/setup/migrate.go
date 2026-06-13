@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
@@ -27,10 +28,10 @@ func runMigrations(ctx context.Context, dsn, migrationsDir string) error {
 	defer func() {
 		srcErr, dbErr := m.Close()
 		if srcErr != nil {
-			fmt.Fprintf(stderrSink(), "migrate close source: %v\n", srcErr)
+			fmt.Fprintf(os.Stderr, "migrate close source: %v\n", srcErr)
 		}
 		if dbErr != nil {
-			fmt.Fprintf(stderrSink(), "migrate close db: %v\n", dbErr)
+			fmt.Fprintf(os.Stderr, "migrate close db: %v\n", dbErr)
 		}
 	}()
 

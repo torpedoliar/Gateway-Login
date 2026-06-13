@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 )
 
 // KaryawanRow is the raw row from sja.m_karyawan.
@@ -58,10 +58,21 @@ func (c *Client) SetBatchSize(n int) {
 	}
 }
 
-// BuildDSN constructs a MySQL DSN from structured fields.
+// BuildDSN constructs a MySQL DSN from structured fields. The user/password
+// are passed through go-sql-driver's mysql.Config so special characters
+// (e.g. '@', '/', '?', '#', '%') are URL-escaped automatically and never
+// corrupt the DSN.
 func BuildDSN(host string, port int, database, user, password string) string {
-	return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&readTimeout=30s&loc=Local",
-		user, password, host, port, database)
+	cfg := mysql.NewConfig()
+	cfg.User = user
+	cfg.Passwd = password
+	cfg.Net = "tcp"
+	cfg.Addr = fmt.Sprintf("%s:%d", host, port)
+	cfg.DBName = database
+	cfg.ParseTime = true
+	cfg.ReadTimeout = 30 * time.Second
+	cfg.Loc = time.Local
+	return cfg.FormatDSN()
 }
 
 // FetchKaryawanUpdatedSince returns rows with updated_at > since, ordered ascending.

@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/yourorg/sso-gateway/internal/apikey"
+	"github.com/yourorg/sso-gateway/internal/setup"
 	"github.com/yourorg/sso-gateway/internal/store"
 )
 
@@ -28,7 +28,7 @@ func apiKeyEntry(cfg *store.Config, plaintext, fallbackID string) *apikey.Entry 
 	}
 	return &apikey.Entry{
 		ID:          id,
-		KeyHash:     setupHash(plaintext),
+		KeyHash:     setup.HashAPIKey(plaintext),
 		Description: desc,
 	}
 }
@@ -47,8 +47,7 @@ VALUES ($1, $2, $3)
 ON CONFLICT (id) DO UPDATE SET
   key_hash    = EXCLUDED.key_hash,
   description = EXCLUDED.description`
-	_, err := pool.Exec(ctx, q, e.ID, e.KeyHash, e.Description)
-	if err != nil && err != pgx.ErrNoRows {
+	if _, err := pool.Exec(ctx, q, e.ID, e.KeyHash, e.Description); err != nil {
 		return fmt.Errorf("upsert api key: %w", err)
 	}
 	return nil
