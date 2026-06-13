@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -54,16 +56,25 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// Run the listener in a goroutine and forward non-graceful errors to the
+	// main goroutine via a channel. Calling log.Fatalf/os.Exit inside a
+	// goroutine bypasses deferred Close() on the pool/redis client.
+	listenErr := make(chan error, 1)
 	go func() {
 		logger.L().Info().Str("addr", cfg.HTTPAddr).Msg("api listening")
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("http: %v", err)
+		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			listenErr <- err
 		}
 	}()
 
-	<-ctx.Done()
-	logger.L().Info().Msg("api shutting down")
-	shutdownCtx, sCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer sCancel()
-	_ = httpSrv.Shutdown(shutdownCtx)
+	select {
+	case err := <-listenErr:
+		logger.L().Error().Err(err).Msg("http listener failed")
+		os.Exit(1)
+	case <-ctx.Done():
+		logger.L().Info().Msg("api shutting down")
+		shutdownCtx, sCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer sCancel()
+		_ = httpSrv.Shutdown(shutdownCtx)
+	}
 }
