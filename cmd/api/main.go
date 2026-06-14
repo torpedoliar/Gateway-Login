@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,46 +11,30 @@ import (
 
 	"github.com/yourorg/sso-gateway/internal/api"
 	"github.com/yourorg/sso-gateway/internal/apikey"
-	"github.com/yourorg/sso-gateway/internal/config"
-	"github.com/yourorg/sso-gateway/internal/db"
+	"github.com/yourorg/sso-gateway/internal/bootstrap"
 	"github.com/yourorg/sso-gateway/internal/karyawan"
 	"github.com/yourorg/sso-gateway/internal/logger"
-	"github.com/yourorg/sso-gateway/internal/redisx"
 	"github.com/yourorg/sso-gateway/internal/server"
 )
 
 func main() {
-	cfg, err := config.Load()
-	if err != nil {
-		log.Fatalf("config: %v", err)
-	}
-	logger.Init(cfg.LogLevel)
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	pool, err := db.NewPool(ctx, cfg.PostgresDSN)
-	if err != nil {
-		log.Fatalf("postgres: %v", err)
-	}
-	defer pool.Close()
+	d := bootstrap.MustRun(ctx)
+	defer d.Close()
 
-	rc, err := redisx.NewClient(ctx, cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
-	if err != nil {
-		log.Fatalf("redis: %v", err)
-	}
-	defer rc.Close()
-
-	repo := karyawan.NewRepo(pool)
-	ak := apikey.NewStore(pool)
+	repo := karyawan.NewRepo(d.Pool)
+	ak := apikey.NewStore(d.Pool)
 	h := api.NewHandlers(repo)
 
 	srv := server.New(server.Config{
-		Addr:            cfg.HTTPAddr,
-		APIRateLimitRPM: cfg.APIRateLimitPerMin,
-	}, server.Deps{API: h, APIKeys: ak, Redis: rc})
+		Addr:            d.Cfg.HTTPAddr,
+		APIRateLimitRPM: d.Cfg.APIRateLimitPerMin,
+	}, server.Deps{API: h, APIKeys: ak, Redis: d.Redis})
 
 	httpSrv := &http.Server{
-		Addr:              cfg.HTTPAddr,
+		Addr:              d.Cfg.HTTPAddr,
 		Handler:           srv.Router(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -61,7 +44,7 @@ func main() {
 	// goroutine bypasses deferred Close() on the pool/redis client.
 	listenErr := make(chan error, 1)
 	go func() {
-		logger.L().Info().Str("addr", cfg.HTTPAddr).Msg("api listening")
+		logger.L().Info().Str("addr", d.Cfg.HTTPAddr).Msg("api listening")
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			listenErr <- err
 		}
