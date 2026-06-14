@@ -17,7 +17,15 @@ coverage.txt
 deploy/.env
 deploy/config.yaml
 deploy/keys/
+deploy/secrets/*.txt
+deploy/logs/
+deploy/backupdata-data/
 *.pem
+
+# Docker
+deploy/secrets/postgres_password.txt
+deploy/secrets/redis_password.txt
+deploy/secrets/gateway_master_key.txt
 
 # IDE
 .idea/

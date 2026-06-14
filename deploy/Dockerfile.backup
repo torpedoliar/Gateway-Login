@@ -1,0 +1,5 @@
+FROM postgres:16-alpine
+
+# Cron + awscli for the backup container. Kept in a separate Dockerfile
+# so the production api/sync images stay small.
+RUN apk add --no-cache aws-cli bash

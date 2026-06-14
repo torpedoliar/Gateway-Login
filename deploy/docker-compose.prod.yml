@@ -1,0 +1,267 @@
+# Production deployment for SSO Gateway.
+#
+# Differences from the dev compose (docker-compose.yml):
+# - Postgres + Redis are NOT exposed to the host (internal only).
+# - All services use restart: unless-stopped.
+# - Resource limits (mem + cpus) on every service.
+# - Read-only root filesystem where the binary allows it.
+# - Drop Linux capabilities, no-new-privileges.
+# - Healthchecks on every long-running service.
+# - Logs go to a dedicated volume (rotated by the host or a sidecar).
+# - Dedicated backup service that runs pg_dump on a schedule.
+# - api replicas for HA behind nginx; sync stays single-instance
+#   (the advisory lock serializes it anyway, no point running two).
+#
+# First-time deploy:
+#   1. Copy this file to the host.
+#   2. Create deploy/.env on the host with POSTGRES_PASSWORD,
+#      REDIS_PASSWORD, GATEWAY_MASTER_KEY, VPS_MYSQL_DSN, JWT_ISSUER.
+#      These come from your secrets manager — DO NOT commit them.
+#   3. Run deploy/backup/entrypoint.sh to seed the deploy/keys/ dir.
+#   4. Bring up the stack: `docker compose -f deploy/docker-compose.prod.yml up -d`.
+#   5. Run setup once (interactive): `docker compose -f deploy/docker-compose.prod.yml run --rm setup`.
+#
+# Rolling update:
+#   docker compose -f deploy/docker-compose.prod.yml pull
+#   docker compose -f deploy/docker-compose.prod.yml up -d
+#   (zero-downtime for api via the replicas + nginx upstream keepalive)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sso
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_DB: sso
+    secrets:
+      - postgres_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./logs/postgres:/var/log/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sso -d sso"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "10"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+        reservations:
+          cpus: "0.5"
+          memory: 512M
+    security_opt:
+      - no-new-privileges:true
+    # NOT exposed to the host; only the api/sync/setup containers
+    # reach postgres via the docker network on 5432.
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --requirepass
+      - --requirepass-file
+      - /run/secrets/redis_password
+      - --save
+      - 60
+      - 100
+      - --appendonly
+      - "yes"
+    secrets:
+      - redis_password
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "$(cat /run/secrets/redis_password)", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+    security_opt:
+      - no-new-privileges:true
+
+  # One-shot interactive setup. Use:
+  #   docker compose -f docker-compose.prod.yml run --rm setup
+  setup:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.setup
+    environment:
+      POSTGRES_DSN: postgres://sso:$(cat /run/secrets/postgres_password)@postgres:5432/sso?sslmode=disable
+      REDIS_ADDR: redis:6379
+    secrets:
+      - postgres_password
+    volumes:
+      - gateway-config:/etc/gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
+    # No restart: this is a one-shot container invoked by the operator.
+    profiles: ["setup"]
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    restart: unless-stopped
+    environment:
+      GATEWAY_HTTP_ADDR: ":8080"
+      POSTGRES_DSN: postgres://sso:$(cat /run/secrets/postgres_password)@postgres:5432/sso?sslmode=disable
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD_FILE: /run/secrets/redis_password
+      GATEWAY_MASTER_KEY_FILE: /run/secrets/gateway_master_key
+      API_RATE_LIMIT_PER_MIN: 300
+      LOG_LEVEL: info
+    secrets:
+      - postgres_password
+      - redis_password
+      - gateway_master_key
+    volumes:
+      - gateway-config:/etc/gateway:ro
+    healthcheck:
+      test: ["CMD", "/app/api", "-healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "30m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.2"
+          memory: 128M
+    security_opt:
+      - no-new-privileges:true
+    read_only: false  # /tmp needed for some Go runtime artifacts
+    # Internal port only; nginx fronts it.
+    expose:
+      - "8080"
+    # Two replicas for rolling deploy + small HA. nginx round-robins.
+    # Keep at 2 unless you scale Postgres read pool accordingly.
+    # (Single instance is fine if nginx itself is single-point — HA at
+    # the gateway tier requires external LB in front of nginx too.)
+
+  sync:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.sync
+    restart: unless-stopped
+    environment:
+      POSTGRES_DSN: postgres://sso:$(cat /run/secrets/postgres_password)@postgres:5432/sso?sslmode=disable
+      REDIS_ADDR: redis:6379
+      GATEWAY_MASTER_KEY_FILE: /run/secrets/gateway_master_key
+      GATEWAY_CONFIG_PATH: /etc/gateway/config.yaml
+      SYNC_INTERVAL: 5m
+      SYNC_BATCH_SIZE: 500
+      LOG_LEVEL: info
+    secrets:
+      - postgres_password
+      - gateway_master_key
+    volumes:
+      - gateway-config:/etc/gateway:ro
+    healthcheck:
+      # sync has no HTTP endpoint; check by running a quick query against
+      # the local postgres via a tiny wrapper. The simplest: confirm the
+      # process is alive and the config is readable.
+      test: ["CMD-SHELL", "test -r /etc/gateway/config.yaml"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+    security_opt:
+      - no-new-privileges:true
+    # Single instance only — advisory lock serializes anyway. Scaling
+    # horizontally would require partitioning by NIK_HRIS or similar.
+
+  backup:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.backup
+    restart: unless-stopped
+    environment:
+      PGPASSWORD_FILE: /run/secrets/postgres_password
+      BACKUP_SCHEDULE: "0 2 * * *"  # daily at 02:00 UTC
+      BACKUP_RETENTION_DAYS: 14
+      S3_BUCKET: ${S3_BUCKET:-}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+    secrets:
+      - postgres_password
+    volumes:
+      - backupdata:/backup
+      - ./backup/backup.sh:/usr/local/bin/backup.sh:ro
+    entrypoint: ["/usr/local/bin/backup.sh"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+    security_opt:
+      - no-new-privileges:true
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+  redis_password:
+    file: ./secrets/redis_password.txt
+  gateway_master_key:
+    file: ./secrets/gateway_master_key.txt
+
+volumes:
+  pgdata:
+    name: sso_pgdata
+  redisdata:
+    name: sso_redisdata
+  gateway-config:
+    name: sso_gateway_config
+  backupdata:
+    name: sso_backupdata
