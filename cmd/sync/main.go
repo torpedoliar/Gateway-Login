@@ -36,6 +36,16 @@ func main() {
 		log.Fatalf("load gateway config %s: %v", cfgPath, err)
 	}
 
+	// Recover from a previous process crash: any sync_runs left in
+	// 'running' for >2x the configured interval is almost certainly
+	// orphaned (its syncer is no longer alive). Mark them failed so the
+	// dashboard does not see stuck rows and the watermark is not pinned.
+	if n, err := syncpkg.CleanupStaleRuns(ctx, d.Pool, "karyawan", 2*d.Cfg.SyncInterval); err != nil {
+		logger.L().Warn().Err(err).Msg("cleanup stale sync_runs failed (non-fatal)")
+	} else if n > 0 {
+		logger.L().Info().Int64("rows", n).Msg("recovered stale running sync_runs")
+	}
+
 	vps, err := vpsmysql.NewClientFromStoreConfig(ctx, &storeCfg.VPS, "", d.Cfg.MasterKey, d.Cfg.SyncBatchSize)
 	if err != nil {
 		log.Fatalf("vps mysql: %v", err)
