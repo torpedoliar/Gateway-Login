@@ -61,7 +61,8 @@ func (c *Client) SetBatchSize(n int) {
 // BuildDSN constructs a MySQL DSN from structured fields. The user/password
 // are passed through go-sql-driver's mysql.Config so special characters
 // (e.g. '@', '/', '?', '#', '%') are URL-escaped automatically and never
-// corrupt the DSN.
+// corrupt the DSN. loc is pinned to UTC so the driver parses naive
+// DATETIME values the same way regardless of the Go binary's local TZ.
 func BuildDSN(host string, port int, database, user, password string) string {
 	cfg := mysql.NewConfig()
 	cfg.User = user
@@ -71,7 +72,7 @@ func BuildDSN(host string, port int, database, user, password string) string {
 	cfg.DBName = database
 	cfg.ParseTime = true
 	cfg.ReadTimeout = 30 * time.Second
-	cfg.Loc = time.Local
+	cfg.Loc = time.UTC
 	return cfg.FormatDSN()
 }
 
