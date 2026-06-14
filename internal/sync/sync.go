@@ -61,6 +61,22 @@ func (s *Syncer) SyncKaryawan(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("insert sync_run: %w", err)
 	}
 
+	// Serialize concurrent sync runs of the same resource via a Postgres
+	// transaction-scoped advisory lock. The lock is keyed on
+	// hashtext('sso_gateway_sync:' || resource) so unrelated resources
+	// don't block each other. Held until the surrounding transaction
+	// commits, so a crashed syncer releases the lock automatically.
+	lockKey := int64(hashtextSyncResource(s.resource))
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return s.failRun(ctx, runID, fmt.Errorf("begin lock tx: %w", err))
+	}
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", lockKey); err != nil {
+		_ = tx.Rollback(ctx)
+		return s.failRun(ctx, runID, fmt.Errorf("acquire advisory lock: %w", err))
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	watermark, err := s.readWatermark(ctx)
 	if err != nil {
 		return s.failRun(ctx, runID, fmt.Errorf("read watermark: %w", err))
@@ -110,7 +126,7 @@ func (s *Syncer) SyncKaryawan(ctx context.Context) (int, error) {
 		}
 	}
 
-	_, err = s.pool.Exec(ctx,
+	_, err = tx.Exec(ctx,
 		`INSERT INTO sync_state (resource, watermark, last_run_at, last_status)
 		 VALUES ($1, $2, $3, 'success')
 		 ON CONFLICT (resource) DO UPDATE SET
@@ -120,16 +136,34 @@ func (s *Syncer) SyncKaryawan(ctx context.Context) (int, error) {
 		   last_error  = NULL`,
 		s.resource, maxTs, time.Now().UTC())
 	if err != nil {
+		_ = tx.Rollback(ctx)
 		return s.failRun(ctx, runID, fmt.Errorf("update sync_state: %w", err))
 	}
 
-	_, err = s.pool.Exec(ctx,
+	_, err = tx.Exec(ctx,
 		`UPDATE sync_runs SET finished_at = $1, rows_upserted = $2, status = 'success' WHERE id = $3`,
 		time.Now().UTC(), upserted, runID)
 	if err != nil {
+		_ = tx.Rollback(ctx)
 		return upserted, fmt.Errorf("finalize sync_run: %w", err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return upserted, fmt.Errorf("commit sync tx: %w", err)
+	}
 	return upserted, nil
+}
+
+// hashtextSyncResource produces a stable 32-bit hash of a resource name
+// for use as a pg_advisory_xact_lock key. Mirrors PostgreSQL's hashtext
+// for ASCII names: 32-bit FNV-1a-like fold. No external dep — values
+// just need to be unique per resource within a deployment.
+func hashtextSyncResource(resource string) uint32 {
+	var h uint32 = 2166136261
+	for i := 0; i < len(resource); i++ {
+		h ^= uint32(resource[i])
+		h *= 16777619
+	}
+	return h
 }
 
 func (s *Syncer) readWatermark(ctx context.Context) (time.Time, error) {
