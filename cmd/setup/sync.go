@@ -6,7 +6,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/yourorg/sso-gateway/internal/crypto"
 	"github.com/yourorg/sso-gateway/internal/store"
 	syncpkg "github.com/yourorg/sso-gateway/internal/sync"
 	"github.com/yourorg/sso-gateway/internal/vpsmysql"
@@ -19,28 +18,11 @@ func runInitialSync(ctx context.Context, pool *pgxpool.Pool, storeCfg *store.Con
 	if storeCfg == nil {
 		return fmt.Errorf("nil store config")
 	}
-	masterKey, err := crypto.Base64ToKey(masterB64)
-	if err != nil {
-		return fmt.Errorf("decode master key: %w", err)
-	}
-	password, err := storeCfg.VPS.GetDecryptedPassword(masterKey)
-	if err != nil {
-		return fmt.Errorf("decrypt vps password: %w", err)
-	}
-	// Use the operator's configured batch size (default 500) instead of
-	// hardcoding — keeps setup in sync with svc-sync's behavior.
 	batch := storeCfg.Sync.BatchSize
 	if batch <= 0 {
 		batch = 500
 	}
-	dsn := vpsmysql.BuildDSN(
-		storeCfg.VPS.Host,
-		storeCfg.VPS.Port,
-		storeCfg.VPS.Database,
-		storeCfg.VPS.Username,
-		password,
-	)
-	vps, err := vpsmysql.NewClient(ctx, dsn, batch)
+	vps, err := vpsmysql.NewClientFromStoreConfig(ctx, &storeCfg.VPS, "", masterB64, batch)
 	if err != nil {
 		return fmt.Errorf("vps mysql: %w", err)
 	}

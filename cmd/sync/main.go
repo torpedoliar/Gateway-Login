@@ -12,7 +12,6 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"github.com/yourorg/sso-gateway/internal/config"
-	"github.com/yourorg/sso-gateway/internal/crypto"
 	"github.com/yourorg/sso-gateway/internal/db"
 	"github.com/yourorg/sso-gateway/internal/logger"
 	"github.com/yourorg/sso-gateway/internal/store"
@@ -45,17 +44,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("load gateway config %s: %v", cfgPath, err)
 	}
-	masterKey, err := crypto.Base64ToKey(cfg.MasterKey)
-	if err != nil {
-		log.Fatalf("invalid master key: %v", err)
-	}
-	password, err := storeCfg.VPS.GetDecryptedPassword(masterKey)
-	if err != nil {
-		log.Fatalf("decrypt vps password: %v", err)
-	}
-	dsn := vpsmysql.BuildDSN(storeCfg.VPS.Host, storeCfg.VPS.Port, storeCfg.VPS.Database, storeCfg.VPS.Username, password)
 
-	vps, err := vpsmysql.NewClient(ctx, dsn, cfg.SyncBatchSize)
+	vps, err := vpsmysql.NewClientFromStoreConfig(ctx, &storeCfg.VPS, "", cfg.MasterKey, cfg.SyncBatchSize)
 	if err != nil {
 		log.Fatalf("vps mysql: %v", err)
 	}

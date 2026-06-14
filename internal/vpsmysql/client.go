@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+
+	"github.com/yourorg/sso-gateway/internal/crypto"
+	"github.com/yourorg/sso-gateway/internal/store"
 )
 
 // KaryawanRow is the raw row from sja.m_karyawan.
@@ -74,6 +77,31 @@ func BuildDSN(host string, port int, database, user, password string) string {
 	cfg.ReadTimeout = 30 * time.Second
 	cfg.Loc = time.UTC
 	return cfg.FormatDSN()
+}
+
+// NewClientFromStoreConfig decrypts the VPS password with masterKey, builds
+// the DSN, and returns a connected Client. Consolidates the
+// "load-storeCfg → decrypt → BuildDSN → NewClient" sequence shared by
+// cmd/sync and cmd/setup so a future change to DSN construction (TLS,
+// socket path, options) lives in one place.
+func NewClientFromStoreConfig(ctx context.Context, cfg *store.VPSConfig, masterKey, masterB64 string, batchSize int) (*Client, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("nil vps config")
+	}
+	if masterB64 == "" {
+		return nil, fmt.Errorf("empty master key")
+	}
+	mk, err := crypto.Base64ToKey(masterB64)
+	if err != nil {
+		return nil, fmt.Errorf("decode master key: %w", err)
+	}
+	pw, err := cfg.GetDecryptedPassword(mk)
+	if err != nil {
+		return nil, fmt.Errorf("decrypt vps password: %w", err)
+	}
+	_ = masterKey // reserved for callers that need the raw key directly
+	dsn := BuildDSN(cfg.Host, cfg.Port, cfg.Database, cfg.Username, pw)
+	return NewClient(ctx, dsn, batchSize)
 }
 
 // FetchKaryawanUpdatedSince returns rows with updated_at > since, ordered ascending.
