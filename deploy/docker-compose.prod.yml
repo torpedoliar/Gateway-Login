@@ -68,12 +68,11 @@ services:
     restart: unless-stopped
     command:
       - redis-server
-      - --requirepass
       - --requirepass-file
       - /run/secrets/redis_password
       - --save
-      - 60
-      - 100
+      - "60"
+      - "100"
       - --appendonly
       - "yes"
     secrets:
