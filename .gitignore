@@ -35,3 +35,7 @@ deploy/secrets/gateway_master_key.txt
 # OS
 .DS_Store
 Thumbs.db
+
+# Update scripts state
+backups/
+*.sql.gz
