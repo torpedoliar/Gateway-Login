@@ -283,7 +283,54 @@ S3_ENDPOINT=
     Write-Ok 'wrote: deploy/.env (ACL restricted)'
     Write-Log '.env written'
 }
-function Invoke-VpsPrefill { Write-Step 'VpsPrefill (TODO)';  Write-Ok 'noop' }
+function Invoke-VpsPrefill {
+    Write-Step 'VPS prefill (for setup wizard)'
+
+    if ((Test-Path $SetupEnvFile) -and -not $Force) {
+        Write-Skip "exists: deploy/.setup-env (delete to re-prompt)"
+        return
+    }
+
+    Write-Host ''
+    Write-Host '  VPS MySQL credentials. The setup container will use these to connect,' -ForegroundColor Yellow
+    Write-Host '  encrypt the password with the master key, and write /etc/gateway/config.yaml.' -ForegroundColor Yellow
+    Write-Host ''
+
+    $host_ = Read-Host '  VPS host (e.g. vps.your-domain.com)'
+    if (-not $host_) { throw 'VPS host is required.' }
+
+    $port = Read-Host '  VPS MySQL port [3306]'
+    if (-not $port) { $port = '3306' }
+    if ($port -notmatch '^\d+$') { throw "Port must be numeric. Got: $port" }
+
+    $db = Read-Host '  Database name [sja]'
+    if (-not $db) { $db = 'sja' }
+
+    $user = Read-Host '  Username [sso_replicator]'
+    if (-not $user) { $user = 'sso_replicator' }
+
+    $sec = Read-Host '  Password' -AsSecureString
+    if (-not $sec) { throw 'VPS password is required.' }
+    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+    $pwd  = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
+    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+
+    # Build a DSN that the setup container can consume.
+    $dsn = "${user}:${pwd}@tcp(${host_}:${port})/${db}?parseTime=true&readTimeout=30s"
+    $setupEnv = "VPS_MYSQL_DSN=$dsn`n"
+
+    Set-Content -Path $SetupEnvFile -Value $setupEnv -NoNewline -Encoding UTF8
+
+    $currentUser = "{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME
+    & icacls $SetupEnvFile /inheritance:r /grant:r "${currentUser}:(R,W)" | Out-Null
+
+    # Wipe the in-memory password ASAP.
+    $pwd = $null
+    [System.GC]::Collect()
+
+    Write-Ok "wrote: deploy/.setup-env (ACL restricted, contains VPS DSN)"
+    Write-Log 'VpsPrefill written'
+}
 function Invoke-Build      { Write-Step 'Build (TODO)';       Write-Ok 'noop' }
 function Invoke-InfraUp    { Write-Step 'InfraUp (TODO)';     Write-Ok 'noop' }
 function Invoke-Setup      { Write-Step 'Setup (TODO)';       Write-Ok 'noop' }
