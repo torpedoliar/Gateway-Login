@@ -95,8 +95,10 @@ function Test-Preflight {
     }
 
     # openssl (Git for Windows, or system OpenSSL)
+    # cmd /c wrapper: native stderr output under $ErrorActionPreference='Stop'
+    # gets promoted to terminating error even when exit code is 0.
     try {
-        $null = & openssl version 2>&1
+        cmd /c "openssl version 1>nul 2>nul"
         if ($LASTEXITCODE -ne 0) { throw 'openssl version failed' }
     } catch {
         Write-Err 'openssl not on PATH. Install Git for Windows or OpenSSL 1.1+.'
