@@ -349,7 +349,50 @@ function Invoke-Build {
     Write-Ok 'Build complete.'
     Write-Log 'Build complete'
 }
-function Invoke-InfraUp    { Write-Step 'InfraUp (TODO)';     Write-Ok 'noop' }
+function Test-ServiceHealthy {
+    param([string]$Service)
+    $fmt = '{{.Name}};{{.Health}}'
+    $line = docker compose -f $ComposeFile ps --format $fmt $Service 2>&1 | Select-Object -First 1
+    if (-not $line) { return $false }
+    return ($line -match 'healthy')
+}
+
+function Invoke-InfraUp {
+    Write-Step 'Infra up (postgres, redis)'
+
+    $bothHealthy = (Test-ServiceHealthy 'postgres') -and (Test-ServiceHealthy 'redis')
+    if ($bothHealthy -and -not $Force) {
+        Write-Skip 'postgres and redis already healthy'
+        Write-Ok 'Infra up complete.'
+        return
+    }
+
+    Push-Location $DeployDir
+    try {
+        # Suppress stderr — docker compose up may emit progress lines that
+        # under $ErrorActionPreference='Stop' become terminating errors.
+        cmd /c "docker compose -f `"$ComposeFile`" up -d postgres redis 1>nul 2>nul" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'docker compose up -d postgres redis failed' }
+    } finally {
+        Pop-Location
+    }
+
+    # Poll for healthy
+    $deadline = (Get-Date).AddSeconds(120)
+    while ((Get-Date) -lt $deadline) {
+        $pgOk = Test-ServiceHealthy 'postgres'
+        $rdOk = Test-ServiceHealthy 'redis'
+        if ($pgOk -and $rdOk) {
+            Write-Ok 'postgres healthy'
+            Write-Ok 'redis healthy'
+            Write-Ok 'Infra up complete.'
+            Write-Log 'Infra up complete'
+            return
+        }
+        Start-Sleep -Seconds 5
+    }
+    throw 'Timed out waiting 120s for postgres/redis to become healthy. Check `docker compose logs postgres redis`.'
+}
 function Invoke-Setup      { Write-Step 'Setup (TODO)';       Write-Ok 'noop' }
 function Invoke-StackUp    { Write-Step 'StackUp (TODO)';     Write-Ok 'noop' }
 function Invoke-Verify     { Write-Step 'Verify (TODO)';      Write-Ok 'noop' }
