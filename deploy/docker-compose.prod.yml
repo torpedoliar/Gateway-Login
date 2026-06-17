@@ -64,20 +64,18 @@ services:
     # reach postgres via the docker network on 5432.
 
   redis:
-    image: redis:7-alpine
+    # Pinned to 7.4-alpine. Password is injected at container start
+    # by redis-entrypoint.sh, which reads /run/secrets/redis_password
+    # and writes a runtime redis.conf to tmpfs. This avoids the
+    # `requirepass-file` directive (rejected on this image) and
+    # keeps the password out of `docker inspect`.
+    image: redis:7.4-alpine
     restart: unless-stopped
-    command:
-      - redis-server
-      - --requirepass-file
-      - /run/secrets/redis_password
-      - --save
-      - "60"
-      - "100"
-      - --appendonly
-      - "yes"
+    entrypoint: ["/usr/local/bin/redis-entrypoint.sh"]
     secrets:
       - redis_password
     volumes:
+      - ./redis-entrypoint.sh:/usr/local/bin/redis-entrypoint.sh:ro
       - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "$(cat /run/secrets/redis_password)", "ping"]
