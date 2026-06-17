@@ -480,7 +480,55 @@ function Invoke-StackUp {
     }
     throw 'Timed out waiting 120s for api/sync to come up. Check `docker compose logs api sync`.'
 }
-function Invoke-Verify     { Write-Step 'Verify (TODO)';      Write-Ok 'noop' }
+function Invoke-Verify {
+    Write-Step 'Verify'
+
+    # The api container exposes 8080 on the docker network. We curl
+    # the published host port instead, which is the same port nginx
+    # will eventually forward to. If the operator hasn't published
+    # the port (e.g. behind a separate LB), this will still work
+    # because the compose file has `expose: ["8080"]` and the
+    # port mapping on `api` maps 8080 to a random host port.
+    # We resolve the actual published port from compose.
+    $port = (docker compose -f $ComposeFile port api 8080 2>&1 | Select-Object -First 1) -replace '.*:',''
+    if (-not ($port -match '^\d+$')) { throw "could not resolve api published port. Got: $port" }
+
+    $url = "http://localhost:$port/healthz"
+    try {
+        $resp = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10
+        if ($resp.StatusCode -ne 200) { throw "healthz returned $($resp.StatusCode)" }
+        Write-Ok "healthz OK ($url -> 200)"
+    } catch {
+        throw "healthz check failed: $($_.Exception.Message)"
+    }
+
+    # Service health summary
+    $status = docker compose -f $ComposeFile ps --format 'table {{.Name}}\t{{.State}}\t{{.Status}}' 2>&1
+    Write-Host ''
+    Write-Host '  Service status:' -ForegroundColor Cyan
+    $status | ForEach-Object { Write-Host "    $_" }
+
+    # File fingerprints (first 8 chars of sha256, NOT the secret)
+    Write-Host ''
+    Write-Host '  Secret fingerprints (sha256, first 8 chars):' -ForegroundColor Cyan
+    Get-ChildItem -Path $SecretsDir -Filter '*.txt' | ForEach-Object {
+        $h = (Get-FileHash -Path $_.FullName -Algorithm SHA256).Hash.Substring(0,8)
+        Write-Host ("    {0,-28} {1}" -f $_.Name, $h)
+    }
+
+    # Next steps
+    Write-Host ''
+    Write-Host '  Next steps:' -ForegroundColor Cyan
+    Write-Host '    1. Configure your reverse proxy (nginx example in deploy/nginx.conf).'
+    Write-Host '    2. Issue a TLS cert (certbot recommended).'
+    Write-Host '    3. Tail logs:'
+    Write-Host '         docker compose -f deploy/docker-compose.prod.yml logs -f --tail=100'
+    Write-Host '    4. Test from outside:'
+    Write-Host '         curl -H "X-API-Key: <key from setup>" https://gateway/api/v1/karyawan?limit=5'
+    Write-Host ''
+    Write-Ok 'Verify complete.'
+    Write-Log 'Verify complete'
+}
 
 # --- Dispatcher ---
 try {
