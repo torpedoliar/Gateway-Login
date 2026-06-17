@@ -538,15 +538,15 @@ try {
     if ($Stage -in 'All','Preflight')   { Test-Preflight }
 
     if ($Stage -eq 'All') {
-        if ($Force -or $true) { Invoke-Secrets }     # TODO: replace with skip check
-        if ($Force -or $true) { Invoke-Keys }
-        if ($Force -or $true) { Invoke-Env }
-        if ($Force -or $true) { Invoke-VpsPrefill }
-        if ($Force -or $true) { Invoke-Build }
-        if ($Force -or $true) { Invoke-InfraUp }
-        if ($Force -or $true) { Invoke-Setup }
-        if ($Force -or $true) { Invoke-StackUp }
-        if ($Force -or $true) { Invoke-Verify }
+        Invoke-Secrets
+        Invoke-Keys
+        Invoke-Env
+        Invoke-VpsPrefill
+        Invoke-Build
+        Invoke-InfraUp
+        Invoke-Setup
+        Invoke-StackUp
+        Invoke-Verify
     } else {
         switch ($Stage) {
             'Secrets'    { Invoke-Secrets }
