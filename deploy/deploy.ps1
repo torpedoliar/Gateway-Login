@@ -159,6 +159,11 @@ function Invoke-Secrets {
         $path = Join-Path $SecretsDir $name
         $len  = $specs[$name]
 
+        # Reset ACL to inherited (allows overwrite + delete), then delete.
+        # On hosts with stale/restricted perms this ensures we can rewrite.
+        cmd /c "icacls `"$path`" /reset /T 2>nul" | Out-Null
+        if (Test-Path $path) { Remove-Item -Path $path -Force -ErrorAction SilentlyContinue }
+
         $bytes = New-Object byte[] $len
         $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
         try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
@@ -192,6 +197,12 @@ function Invoke-Keys {
     # Restrict the dir to current user.
     & icacls $KeysDir /inheritance:r /grant:r "${user}:(R,W)" | Out-Null
 
+    # Reset ACLs and delete existing keys so we can overwrite them.
+    cmd /c "icacls `"$privKey`" /reset /T 2>nul" | Out-Null
+    cmd /c "icacls `"$pubKey`"  /reset /T 2>nul" | Out-Null
+    if (Test-Path $privKey) { Remove-Item -Path $privKey -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $pubKey)  { Remove-Item -Path $pubKey  -Force -ErrorAction SilentlyContinue }
+
     Write-Host '  Generating 2048-bit RSA keypair (this takes ~5s)...'
     # openssl writes a progress counter to stderr; under $ErrorActionPreference='Stop'
     # PowerShell turns the first stderr line into a terminating RemoteException
@@ -221,9 +232,10 @@ JWT_ISSUER=https://gateway.your-domain.com
 S3_BUCKET=
 S3_ENDPOINT=
 '@
-    if (-not (Test-Path $EnvFile)) {
-        Set-Content -Path $EnvFile -Value $template -Encoding UTF8
-    }
+    # Reset ACL + delete so we can overwrite even if ACL is restrictive.
+    cmd /c "icacls `"$EnvFile`" /reset /T 2>nul" | Out-Null
+    if (Test-Path $EnvFile) { Remove-Item -Path $EnvFile -Force -ErrorAction SilentlyContinue }
+    Set-Content -Path $EnvFile -Value $template -Encoding UTF8
 
     Write-Host ''
     Write-Host '  Two required values for deploy/.env. Leave blank to keep the current value.' -ForegroundColor Yellow
@@ -290,6 +302,9 @@ function Invoke-VpsPrefill {
     $dsn = "${user}:${pwd}@tcp(${host_}:${port})/${db}?parseTime=true&readTimeout=30s"
     $setupEnv = "VPS_MYSQL_DSN=$dsn`n"
 
+    # Reset ACL + delete so we can overwrite even if ACL is restrictive.
+    cmd /c "icacls `"$SetupEnvFile`" /reset /T 2>nul" | Out-Null
+    if (Test-Path $SetupEnvFile) { Remove-Item -Path $SetupEnvFile -Force -ErrorAction SilentlyContinue }
     Set-Content -Path $SetupEnvFile -Value $setupEnv -NoNewline -Encoding UTF8
 
     $currentUser = "{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME
