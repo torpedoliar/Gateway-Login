@@ -180,7 +180,45 @@ function Invoke-Secrets {
     Write-Ok 'Secrets complete.'
     Write-Log 'Secrets complete'
 }
-function Invoke-Keys       { Write-Step 'Keys (TODO)';        Write-Ok 'noop' }
+function Invoke-Keys {
+    Write-Step 'JWT keys'
+    if (-not (Test-Path $KeysDir)) {
+        New-Item -ItemType Directory -Path $KeysDir -Force | Out-Null
+    }
+
+    # Use domain-qualified identity: bare $env:USERNAME resolves to a
+    # stale local-domain SID on some hosts (locks out the dir).
+    $user    = "{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME
+    $privKey = Join-Path $KeysDir 'jwt-private.pem'
+    $pubKey  = Join-Path $KeysDir 'jwt-public.pem'
+
+    # Restrict the dir to current user.
+    & icacls $KeysDir /inheritance:r /grant:r "${user}:(R,W)" | Out-Null
+
+    if ((Test-Path $privKey) -and (Test-Path $pubKey) -and -not $Force) {
+        Write-Skip 'exists: deploy/keys/jwt-{private,public}.pem'
+        Write-Ok 'JWT keys complete.'
+        return
+    }
+
+    Write-Host '  Generating 2048-bit RSA keypair (this takes ~5s)...'
+    # openssl writes a progress counter to stderr; under $ErrorActionPreference='Stop'
+    # PowerShell turns the first stderr line into a terminating RemoteException
+    # even though the exit code is 0. Wrap in cmd /c to fully suppress the native
+    # command error stream and let $LASTEXITCODE reflect real failure.
+    cmd /c "openssl genpkey -algorithm RSA -out `"$privKey`" -pkeyopt rsa_keygen_bits:2048 1>nul 2>nul" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'openssl genpkey failed' }
+    cmd /c "openssl rsa -in `"$privKey`" -pubout -out `"$pubKey`" 1>nul 2>nul" | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'openssl rsa pubout failed' }
+
+    # Grant RW (not just R) so -Force can overwrite on re-run.
+    & icacls $privKey /inheritance:r /grant:r "${user}:(R,W)" | Out-Null
+    & icacls $pubKey  /inheritance:r /grant:r "${user}:(R,W)" | Out-Null
+
+    Write-Ok 'created: deploy/keys/jwt-private.pem (2048-bit RSA, mode restricted)'
+    Write-Ok 'created: deploy/keys/jwt-public.pem'
+    Write-Log 'JWT keys generated'
+}
 function Invoke-Env        { Write-Step 'Env (TODO)';         Write-Ok 'noop' }
 function Invoke-VpsPrefill { Write-Step 'VpsPrefill (TODO)';  Write-Ok 'noop' }
 function Invoke-Build      { Write-Step 'Build (TODO)';       Write-Ok 'noop' }
