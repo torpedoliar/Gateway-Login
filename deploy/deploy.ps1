@@ -133,7 +133,51 @@ function Test-Preflight {
 }
 
 # --- Stage stubs (filled in by later tasks) ---
-function Invoke-Secrets    { Write-Step 'Secrets (TODO)';     Write-Ok 'noop' }
+function Invoke-Secrets {
+    Write-Step 'Secrets'
+    if (-not (Test-Path $SecretsDir)) {
+        New-Item -ItemType Directory -Path $SecretsDir -Force | Out-Null
+    }
+
+    # Restrict the dir to current user only.
+    # /inheritance:r strips inherited ACEs; /grant:r replaces grants.
+    # Use domain-qualified identity: bare $env:USERNAME resolves to a
+    # stale local-domain SID on some hosts (locks out the dir).
+    $user = "{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME
+    & icacls $SecretsDir /inheritance:r /grant:r "${user}:(R,W)" | Out-Null
+
+    # Each entry: name -> byte length
+    $specs = [ordered]@{
+        'postgres_password.txt'    = 24
+        'redis_password.txt'       = 24
+        'gateway_master_key.txt'   = 32
+    }
+
+    foreach ($name in $specs.Keys) {
+        $path = Join-Path $SecretsDir $name
+        $len  = $specs[$name]
+
+        if ((Test-Path $path) -and ((Get-Item $path).Length -gt 0) -and -not $Force) {
+            Write-Skip "exists: deploy/secrets/$name"
+            continue
+        }
+
+        $bytes = New-Object byte[] $len
+        $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+        $b64 = [Convert]::ToBase64String($bytes)
+
+        # -NoNewline: secret files must not carry a trailing CR/LF
+        # (redis-entrypoint.sh and similar consumers will trim, but
+        # writing clean avoids the problem at the source).
+        Set-Content -Path $path -Value $b64 -NoNewline -Encoding UTF8
+        & icacls $path /inheritance:r /grant:r "${user}:(R)" | Out-Null
+        Write-Ok "created: deploy/secrets/$name ($len random bytes)"
+    }
+
+    Write-Ok 'Secrets complete.'
+    Write-Log 'Secrets complete'
+}
 function Invoke-Keys       { Write-Step 'Keys (TODO)';        Write-Ok 'noop' }
 function Invoke-Env        { Write-Step 'Env (TODO)';         Write-Ok 'noop' }
 function Invoke-VpsPrefill { Write-Step 'VpsPrefill (TODO)';  Write-Ok 'noop' }
