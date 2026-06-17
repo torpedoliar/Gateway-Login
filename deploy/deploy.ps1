@@ -170,8 +170,10 @@ function Invoke-Secrets {
         # -NoNewline: secret files must not carry a trailing CR/LF
         # (redis-entrypoint.sh and similar consumers will trim, but
         # writing clean avoids the problem at the source).
-        Set-Content -Path $path -Value $b64 -NoNewline -Encoding UTF8
-        & icacls $path /inheritance:r /grant:r "${user}:(R)" | Out-Null
+        # Use AsciiBytes to avoid the UTF-8 BOM that Set-Content -Encoding UTF8 emits;
+        # a leading BOM would change the file's hash and confuse consumers.
+        [IO.File]::WriteAllBytes($path, [Text.Encoding]::ASCII.GetBytes($b64))
+        & icacls $path /inheritance:r /grant:r "${user}:(R,W)" | Out-Null
         Write-Ok "created: deploy/secrets/$name ($len random bytes)"
     }
 
