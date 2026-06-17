@@ -5,6 +5,20 @@ It assumes a Linux host with Docker 24+ and docker compose v2.
 
 ## TL;DR
 
+### Windows + Docker Desktop
+
+```powershell
+git clone <your-fork> C:\sso-gateway
+cd C:\sso-gateway
+.\deploy\deploy.ps1
+```
+
+The script is idempotent. It will prompt for VPS MySQL credentials
+and an API key during the setup wizard, then bring up the full
+stack. Re-running on a healthy host is a no-op.
+
+### Linux
+
 ```sh
 git clone <your-fork> /opt/sso-gateway && cd /opt/sso-gateway
 ./deploy/bootstrap.sh
@@ -65,6 +79,27 @@ Internet
 - **Sync state** recoverable from crashes (`CleanupStaleRuns`).
 
 ## First-time setup
+
+### Stages (Windows: deploy.ps1)
+
+The Windows deploy script runs nine stages, in order, with skip
+conditions. Run a single stage with `-Stage <Name>` (e.g.
+`-Stage Secrets`) or re-run everything with `-Force`.
+
+| # | Stage      | What it does                                  |
+|---|------------|-----------------------------------------------|
+| 0 | Preflight  | Docker, OpenSSL, compose file, free disk      |
+| 1 | Secrets    | Random 24/32-byte passwords to deploy/secrets/|
+| 2 | Keys       | RS256 JWT keypair via openssl                 |
+| 3 | .env       | Prompts for VPS_MYSQL_DSN and JWT_ISSUER      |
+| 4 | VpsPrefill | Prompts for VPS host/port/user/password       |
+| 5 | Build      | `docker compose build --pull`                  |
+| 6 | InfraUp    | `up -d postgres redis` + healthcheck wait     |
+| 7 | Setup      | Interactive setup container (API key prompt)   |
+| 8 | StackUp    | `up -d` api/sync/backup + healthcheck wait   |
+| 9 | Verify     | `curl /healthz` + summary                     |
+
+Logs are written to `deploy/logs/deploy-<UTC-timestamp>.log`.
 
 ### 1. Bootstrap the host
 
