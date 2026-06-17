@@ -219,7 +219,70 @@ function Invoke-Keys {
     Write-Ok 'created: deploy/keys/jwt-public.pem'
     Write-Log 'JWT keys generated'
 }
-function Invoke-Env        { Write-Step 'Env (TODO)';         Write-Ok 'noop' }
+function Invoke-Env {
+    Write-Step '.env'
+
+    if ((Test-Path $EnvFile) -and -not $Force) {
+        # Parse existing; require both keys to be non-empty for skip.
+        $content = Get-Content $EnvFile -Raw
+        $dsnLine  = ($content -split "`n" | Where-Object { $_ -match '^VPS_MYSQL_DSN=' } | Select-Object -First 1)
+        $issLine  = ($content -split "`n" | Where-Object { $_ -match '^JWT_ISSUER='     } | Select-Object -First 1)
+        $dsnVal   = if ($dsnLine) { ($dsnLine -replace '^VPS_MYSQL_DSN=','').Trim() } else { '' }
+        $issVal   = if ($issLine) { ($issLine -replace '^JWT_ISSUER=',    '').Trim() } else { '' }
+
+        if ($dsnVal -and $issVal -and $dsnVal -ne 'changeme:sso_replicator:REAL_PASSWORD@tcp(vps.your-domain.com:3306)/sja?parseTime=true&readTimeout=30s') {
+            Write-Skip "exists: deploy/.env (VPS_MYSQL_DSN, JWT_ISSUER set)"
+            return
+        }
+        Write-Warn 'deploy/.env exists but VPS_MYSQL_DSN or JWT_ISSUER is empty/placeholder. Re-prompting.'
+    }
+
+    $template = @'
+# Public, non-secret env consumed by compose variable substitution.
+# DO NOT commit this file.
+VPS_MYSQL_DSN=changeme:sso_replicator:REAL_PASSWORD@tcp(vps.your-domain.com:3306)/sja?parseTime=true&readTimeout=30s
+JWT_ISSUER=https://gateway.your-domain.com
+S3_BUCKET=
+S3_ENDPOINT=
+'@
+    if (-not (Test-Path $EnvFile)) {
+        Set-Content -Path $EnvFile -Value $template -Encoding UTF8
+    }
+
+    Write-Host ''
+    Write-Host '  Two required values for deploy/.env. Leave blank to keep the current value.' -ForegroundColor Yellow
+    Write-Host ''
+
+    $current = Get-Content $EnvFile -Raw
+    $curDsn  = if ($current -match '(?m)^VPS_MYSQL_DSN=(.*)$') { $matches[1].Trim() } else { '' }
+    $curIss  = if ($current -match '(?m)^JWT_ISSUER=(.*)$')     { $matches[1].Trim() } else { '' }
+
+    $dsn = Read-Host "  VPS_MYSQL_DSN (e.g. sso_replicator:PWD@tcp(host:3306)/sja?parseTime=true&readTimeout=30s) [$curDsn]"
+    if (-not $dsn) { $dsn = $curDsn }
+    if (-not $dsn) { throw 'VPS_MYSQL_DSN is required.' }
+    if ($dsn -notmatch '^[^:]+:[^@\s]+@tcp\(.+:\d+\)/\S+\?') {
+        throw "VPS_MYSQL_DSN does not match expected shape 'user:pass@tcp(host:port)/db?params'. Got: $dsn"
+    }
+
+    $iss = Read-Host "  JWT_ISSUER (e.g. https://gateway.example.com) [$curIss]"
+    if (-not $iss) { $iss = $curIss }
+    if (-not $iss) { throw 'JWT_ISSUER is required.' }
+    if ($iss -notmatch '^https?://') {
+        throw "JWT_ISSUER must start with http:// or https://. Got: $iss"
+    }
+
+    $s3b = Read-Host '  S3_BUCKET (optional, blank to skip)'
+    $s3e = Read-Host '  S3_ENDPOINT (optional, blank to skip)'
+
+    $content = "VPS_MYSQL_DSN=$dsn`nJWT_ISSUER=$iss`nS3_BUCKET=$s3b`nS3_ENDPOINT=$s3e`n"
+    Set-Content -Path $EnvFile -Value $content -NoNewline -Encoding UTF8
+
+    $user = "{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME
+    & icacls $EnvFile /inheritance:r /grant:r "${user}:(R,W)" | Out-Null
+
+    Write-Ok 'wrote: deploy/.env (ACL restricted)'
+    Write-Log '.env written'
+}
 function Invoke-VpsPrefill { Write-Step 'VpsPrefill (TODO)';  Write-Ok 'noop' }
 function Invoke-Build      { Write-Step 'Build (TODO)';       Write-Ok 'noop' }
 function Invoke-InfraUp    { Write-Step 'InfraUp (TODO)';     Write-Ok 'noop' }
