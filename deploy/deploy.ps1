@@ -227,37 +227,34 @@ function Invoke-Keys {
 function Invoke-Env {
     Write-Step '.env'
 
-    $template = @'
-# Public, non-secret env consumed by compose variable substitution.
-# DO NOT commit this file.
-VPS_MYSQL_DSN=changeme:sso_replicator:REAL_PASSWORD@tcp(vps.your-domain.com:3306)/sja?parseTime=true&readTimeout=30s
-JWT_ISSUER=https://gateway.your-domain.com
-S3_BUCKET=
-S3_ENDPOINT=
-'@
-    # takeown bypasses restrictive ACLs that icacls /reset cannot fix.
-    $null = & takeown /F "$EnvFile" /A 2>$null
-    & icacls $EnvFile /grant:r "$($env:USERDOMAIN)\$($env:USERNAME):(R,W)" *>$null 2>$null
-    if (Test-Path $EnvFile) { Remove-Item -Path $EnvFile -Force -ErrorAction SilentlyContinue }
-    Set-Content -Path $EnvFile -Value $template -Encoding UTF8
-
     Write-Host ''
-    Write-Host '  Two required values for deploy/.env. Leave blank to keep the current value.' -ForegroundColor Yellow
+    Write-Host '  Required: VPS MySQL DSN (built from parts below).' -ForegroundColor Yellow
     Write-Host ''
 
-    $current = Get-Content $EnvFile -Raw
-    $curDsn  = if ($current -match '(?m)^VPS_MYSQL_DSN=(.*)$') { $matches[1].Trim() } else { '' }
-    $curIss  = if ($current -match '(?m)^JWT_ISSUER=(.*)$')     { $matches[1].Trim() } else { '' }
+    $vpsHost = Read-Host '  VPS host'
+    if (-not $vpsHost) { throw 'VPS host is required.' }
 
-    $dsn = Read-Host "  VPS_MYSQL_DSN (e.g. sso_replicator:PWD@tcp(host:3306)/sja?parseTime=true&readTimeout=30s) [$curDsn]"
-    if (-not $dsn) { $dsn = $curDsn }
-    if (-not $dsn) { throw 'VPS_MYSQL_DSN is required.' }
-    if ($dsn -notmatch '^[^:]+:[^@\s]+@tcp\(.+:\d+\)/\S+\?') {
-        throw "VPS_MYSQL_DSN does not match expected shape 'user:pass@tcp(host:port)/db?params'. Got: $dsn"
-    }
+    $vpsPort = Read-Host '  VPS MySQL port [3306]'
+    if (-not $vpsPort) { $vpsPort = '3306' }
+    if ($vpsPort -notmatch '^\d+$') { throw "Port must be numeric. Got: $vpsPort" }
 
-    $iss = Read-Host "  JWT_ISSUER (e.g. https://gateway.example.com) [$curIss]"
-    if (-not $iss) { $iss = $curIss }
+    $vpsDb = Read-Host '  Database name [sja]'
+    if (-not $vpsDb) { $vpsDb = 'sja' }
+
+    $vpsUser = Read-Host '  Username [sso_replicator]'
+    if (-not $vpsUser) { $vpsUser = 'sso_replicator' }
+
+    $vpsSec = Read-Host '  Password' -AsSecureString
+    if (-not $vpsSec) { throw 'VPS password is required.' }
+    $vpsBstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($vpsSec)
+    $vpsPwd  = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($vpsBstr)
+    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($vpsBstr)
+
+    $dsn = "${vpsUser}:${vpsPwd}@tcp(${vpsHost}:${vpsPort})/${vpsDb}?parseTime=true&readTimeout=30s"
+    $vpsPwd = $null; [System.GC]::Collect()
+
+    Write-Host ''
+    $iss = Read-Host '  JWT_ISSUER (e.g. https://gateway.example.com)'
     if (-not $iss) { throw 'JWT_ISSUER is required.' }
     if ($iss -notmatch '^https?://') {
         throw "JWT_ISSUER must start with http:// or https://. Got: $iss"
@@ -267,6 +264,11 @@ S3_ENDPOINT=
     $s3e = Read-Host '  S3_ENDPOINT (optional, blank to skip)'
 
     $content = "VPS_MYSQL_DSN=$dsn`nJWT_ISSUER=$iss`nS3_BUCKET=$s3b`nS3_ENDPOINT=$s3e`n"
+
+    # takeown bypasses restrictive ACLs that icacls /reset cannot fix.
+    $null = & takeown /F "$EnvFile" /A 2>$null
+    & icacls $EnvFile /grant:r "$($env:USERDOMAIN)\$($env:USERNAME):(R,W)" *>$null 2>$null
+    if (Test-Path $EnvFile) { Remove-Item -Path $EnvFile -Force -ErrorAction SilentlyContinue }
     Set-Content -Path $EnvFile -Value $content -NoNewline -Encoding UTF8
 
     $user = "{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME
