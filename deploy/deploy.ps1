@@ -393,7 +393,56 @@ function Invoke-InfraUp {
     }
     throw 'Timed out waiting 120s for postgres/redis to become healthy. Check `docker compose logs postgres redis`.'
 }
-function Invoke-Setup      { Write-Step 'Setup (TODO)';       Write-Ok 'noop' }
+function Test-SetupComplete {
+    # The setup container is "done" when:
+    #  - gateway-config volume has config.yaml
+    #  - api_keys table is non-empty
+    # Both are checked by execing into the running postgres container.
+
+    # 1. config.yaml on the gateway-config volume
+    $cfg = docker compose -f $ComposeFile run --rm -T --entrypoint sh setup -c '
+        if [ -f /etc/gateway/config.yaml ]; then echo present; else echo absent; fi
+    ' 2>&1 | Select-Object -Last 1
+    if ($cfg -ne 'present') { return $false }
+
+    # 2. api_keys row count
+    $count = docker compose -f $ComposeFile exec -T postgres psql -U sso -d sso -tAc "SELECT count(*) FROM api_keys" 2>&1 | Select-Object -Last 1
+    if (-not ($count -match '^\s*\d+\s*$') -or [int]$count -lt 1) { return $false }
+
+    return $true
+}
+
+function Invoke-Setup {
+    Write-Step 'Setup wizard'
+
+    if (-not (Test-Path $SetupEnvFile)) {
+        throw 'deploy/.setup-env missing. Run -Stage VpsPrefill first (or use -Stage All).'
+    }
+
+    if ((Test-SetupComplete) -and -not $Force) {
+        Write-Skip 'setup already complete (config.yaml + api_keys present)'
+        return
+    }
+
+    # Interactive: do NOT redirect stdin. Operator will see the
+    # wizard prompts and type responses.
+    Push-Location $DeployDir
+    try {
+        & docker compose -f $ComposeFile run --rm `
+            --env-file $SetupEnvFile `
+            setup
+        if ($LASTEXITCODE -ne 0) { throw 'setup wizard exited non-zero' }
+    } finally {
+        Pop-Location
+    }
+
+    # Post-check
+    if (-not (Test-SetupComplete)) {
+        throw 'setup wizard completed but config.yaml or api_keys not found. Re-run with -Force.'
+    }
+    Write-Ok 'Setup wizard complete.'
+    Write-Log 'Setup complete'
+}
 function Invoke-StackUp    { Write-Step 'StackUp (TODO)';     Write-Ok 'noop' }
 function Invoke-Verify     { Write-Step 'Verify (TODO)';      Write-Ok 'noop' }
 
