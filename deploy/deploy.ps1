@@ -159,11 +159,9 @@ function Invoke-Secrets {
         $path = Join-Path $SecretsDir $name
         $len  = $specs[$name]
 
-        # takeown: takes ownership + grants Full control to Administrators,
-        # bypassing restrictive ACLs (e.g. stale local-domain SIDs) that
-        # icacls /reset cannot fix. /F targets file, /A grants to Admins,
-        # /R recurses, /D Y auto-confirms. Then grant current user RW.
-        $null = & takeown /F "$path" /A /R /D Y 2>$null
+        # takeown: takes file ownership (bypasses restrictive ACLs),
+        # then grant current user RW. /F targets a file, /A = Admins.
+        $null = & takeown /F "$path" /A 2>$null
         & icacls $path /grant:r "$($env:USERDOMAIN)\$($env:USERNAME):(R,W)" *>$null 2>$null
         if (Test-Path $path) { Remove-Item -Path $path -Force -ErrorAction SilentlyContinue }
 
@@ -201,10 +199,10 @@ function Invoke-Keys {
     & icacls $KeysDir /inheritance:r /grant:r "${user}:(R,W)" | Out-Null
 
     # takeown bypasses restrictive ACLs that icacls /reset cannot fix.
-    $null = & takeown /F "$privKey" /A /R /D Y 2>$null
+    $null = & takeown /F "$privKey" /A 2>$null
     & icacls $privKey /grant:r "$($env:USERDOMAIN)\$($env:USERNAME):(R,W)" *>$null 2>$null
     if (Test-Path $privKey) { Remove-Item -Path $privKey -Force -ErrorAction SilentlyContinue }
-    $null = & takeown /F "$pubKey" /A /R /D Y 2>$null
+    $null = & takeown /F "$pubKey" /A 2>$null
     & icacls $pubKey /grant:r "$($env:USERDOMAIN)\$($env:USERNAME):(R,W)" *>$null 2>$null
     if (Test-Path $pubKey) { Remove-Item -Path $pubKey -Force -ErrorAction SilentlyContinue }
 
@@ -238,7 +236,7 @@ S3_BUCKET=
 S3_ENDPOINT=
 '@
     # takeown bypasses restrictive ACLs that icacls /reset cannot fix.
-    $null = & takeown /F "$EnvFile" /A /R /D Y 2>$null
+    $null = & takeown /F "$EnvFile" /A 2>$null
     & icacls $EnvFile /grant:r "$($env:USERDOMAIN)\$($env:USERNAME):(R,W)" *>$null 2>$null
     if (Test-Path $EnvFile) { Remove-Item -Path $EnvFile -Force -ErrorAction SilentlyContinue }
     Set-Content -Path $EnvFile -Value $template -Encoding UTF8
@@ -309,7 +307,7 @@ function Invoke-VpsPrefill {
     $setupEnv = "VPS_MYSQL_DSN=$dsn`n"
 
     # takeown bypasses restrictive ACLs that icacls /reset cannot fix.
-    $null = & takeown /F "$SetupEnvFile" /A /R /D Y 2>$null
+    $null = & takeown /F "$SetupEnvFile" /A 2>$null
     & icacls $SetupEnvFile /grant:r "$($env:USERDOMAIN)\$($env:USERNAME):(R,W)" *>$null 2>$null
     if (Test-Path $SetupEnvFile) { Remove-Item -Path $SetupEnvFile -Force -ErrorAction SilentlyContinue }
     Set-Content -Path $SetupEnvFile -Value $setupEnv -NoNewline -Encoding UTF8
