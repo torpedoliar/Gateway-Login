@@ -26,6 +26,7 @@ deploy/backupdata-data/
 deploy/secrets/postgres_password.txt
 deploy/secrets/redis_password.txt
 deploy/secrets/gateway_master_key.txt
+deploy/.setup-env
 
 # IDE
 .idea/
