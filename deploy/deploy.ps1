@@ -331,7 +331,24 @@ function Invoke-VpsPrefill {
     Write-Ok "wrote: deploy/.setup-env (ACL restricted, contains VPS DSN)"
     Write-Log 'VpsPrefill written'
 }
-function Invoke-Build      { Write-Step 'Build (TODO)';       Write-Ok 'noop' }
+function Invoke-Build {
+    Write-Step 'Build images'
+    Push-Location $DeployDir
+    try {
+        # The previous subagent's lesson: openssl writes a progress
+        # counter to stderr which under $ErrorActionPreference='Stop'
+        # becomes a terminating RemoteException even on exit 0. The
+        # same applies to any docker subcommand that emits progress
+        # (build, pull). Suppress stderr in the cmd /c shell so
+        # $LASTEXITCODE reflects real failure only.
+        cmd /c "docker compose -f `"$ComposeFile`" build --pull 1>nul 2>nul" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'docker compose build failed' }
+    } finally {
+        Pop-Location
+    }
+    Write-Ok 'Build complete.'
+    Write-Log 'Build complete'
+}
 function Invoke-InfraUp    { Write-Step 'InfraUp (TODO)';     Write-Ok 'noop' }
 function Invoke-Setup      { Write-Step 'Setup (TODO)';       Write-Ok 'noop' }
 function Invoke-StackUp    { Write-Step 'StackUp (TODO)';     Write-Ok 'noop' }
