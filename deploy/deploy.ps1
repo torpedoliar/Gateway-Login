@@ -159,11 +159,6 @@ function Invoke-Secrets {
         $path = Join-Path $SecretsDir $name
         $len  = $specs[$name]
 
-        if ((Test-Path $path) -and ((Get-Item $path).Length -gt 0) -and -not $Force) {
-            Write-Skip "exists: deploy/secrets/$name"
-            continue
-        }
-
         $bytes = New-Object byte[] $len
         $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
         try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
@@ -197,12 +192,6 @@ function Invoke-Keys {
     # Restrict the dir to current user.
     & icacls $KeysDir /inheritance:r /grant:r "${user}:(R,W)" | Out-Null
 
-    if ((Test-Path $privKey) -and (Test-Path $pubKey) -and -not $Force) {
-        Write-Skip 'exists: deploy/keys/jwt-{private,public}.pem'
-        Write-Ok 'JWT keys complete.'
-        return
-    }
-
     Write-Host '  Generating 2048-bit RSA keypair (this takes ~5s)...'
     # openssl writes a progress counter to stderr; under $ErrorActionPreference='Stop'
     # PowerShell turns the first stderr line into a terminating RemoteException
@@ -223,21 +212,6 @@ function Invoke-Keys {
 }
 function Invoke-Env {
     Write-Step '.env'
-
-    if ((Test-Path $EnvFile) -and -not $Force) {
-        # Parse existing; require both keys to be non-empty for skip.
-        $content = Get-Content $EnvFile -Raw
-        $dsnLine  = ($content -split "`n" | Where-Object { $_ -match '^VPS_MYSQL_DSN=' } | Select-Object -First 1)
-        $issLine  = ($content -split "`n" | Where-Object { $_ -match '^JWT_ISSUER='     } | Select-Object -First 1)
-        $dsnVal   = if ($dsnLine) { ($dsnLine -replace '^VPS_MYSQL_DSN=','').Trim() } else { '' }
-        $issVal   = if ($issLine) { ($issLine -replace '^JWT_ISSUER=',    '').Trim() } else { '' }
-
-        if ($dsnVal -and $issVal -and $dsnVal -ne 'changeme:sso_replicator:REAL_PASSWORD@tcp(vps.your-domain.com:3306)/sja?parseTime=true&readTimeout=30s') {
-            Write-Skip "exists: deploy/.env (VPS_MYSQL_DSN, JWT_ISSUER set)"
-            return
-        }
-        Write-Warn 'deploy/.env exists but VPS_MYSQL_DSN or JWT_ISSUER is empty/placeholder. Re-prompting.'
-    }
 
     $template = @'
 # Public, non-secret env consumed by compose variable substitution.
@@ -287,11 +261,6 @@ S3_ENDPOINT=
 }
 function Invoke-VpsPrefill {
     Write-Step 'VPS prefill (for setup wizard)'
-
-    if ((Test-Path $SetupEnvFile) -and -not $Force) {
-        Write-Skip "exists: deploy/.setup-env (delete to re-prompt)"
-        return
-    }
 
     Write-Host ''
     Write-Host '  VPS MySQL credentials. The setup container will use these to connect,' -ForegroundColor Yellow
