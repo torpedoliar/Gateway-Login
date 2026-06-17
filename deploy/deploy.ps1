@@ -443,7 +443,43 @@ function Invoke-Setup {
     Write-Ok 'Setup wizard complete.'
     Write-Log 'Setup complete'
 }
-function Invoke-StackUp    { Write-Step 'StackUp (TODO)';     Write-Ok 'noop' }
+function Test-StackUp {
+    $api = Test-ServiceHealthy 'api'
+    $sync = docker compose -f $ComposeFile ps --format '{{.Name}};{{.State}}' sync 2>&1 | Select-Object -First 1
+    $syncRunning = $sync -match 'running'
+    return ($api -and $syncRunning)
+}
+
+function Invoke-StackUp {
+    Write-Step 'Stack up (api, sync, backup)'
+
+    if ((Test-StackUp) -and -not $Force) {
+        Write-Skip 'api healthy and sync running'
+        return
+    }
+
+    Push-Location $DeployDir
+    try {
+        # Suppress stderr — same $ErrorActionPreference='Stop' concern as Build.
+        cmd /c "docker compose -f `"$ComposeFile`" up -d 1>nul 2>nul" | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'docker compose up -d failed' }
+    } finally {
+        Pop-Location
+    }
+
+    $deadline = (Get-Date).AddSeconds(120)
+    while ((Get-Date) -lt $deadline) {
+        if (Test-StackUp) {
+            Write-Ok 'api healthy'
+            Write-Ok 'sync running'
+            Write-Ok 'Stack up complete.'
+            Write-Log 'Stack up complete'
+            return
+        }
+        Start-Sleep -Seconds 5
+    }
+    throw 'Timed out waiting 120s for api/sync to come up. Check `docker compose logs api sync`.'
+}
 function Invoke-Verify     { Write-Step 'Verify (TODO)';      Write-Ok 'noop' }
 
 # --- Dispatcher ---
