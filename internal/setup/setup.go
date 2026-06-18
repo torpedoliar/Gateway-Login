@@ -51,9 +51,14 @@ func (SurveyPrompter) Ask(qs []*Question) ([]string, error) {
 		}
 		sqs[i] = sq
 	}
-	answers := struct {
+	// Named struct: survey won't try to populate it from environment variables
+	// (unlike an anonymous struct, which survey v2 auto-matches against env vars,
+	// causing "could not find field matching ..." errors when extra env vars
+	// like VPS_MYSQL_DSN are present in the container's environment).
+	type answerSheet struct {
 		Out []string
-	}{Out: make([]string, len(qs))}
+	}
+	answers := answerSheet{Out: make([]string, len(qs))}
 	if err := survey.Ask(sqs, &answers); err != nil {
 		return nil, err
 	}
