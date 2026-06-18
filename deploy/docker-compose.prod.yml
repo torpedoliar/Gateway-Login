@@ -71,7 +71,7 @@ services:
     # keeps the password out of `docker inspect`.
     image: redis:7.4-alpine
     restart: unless-stopped
-    entrypoint: ["/usr/local/bin/redis-entrypoint.sh"]
+    entrypoint: ["/bin/sh", "/usr/local/bin/redis-entrypoint.sh"]
     secrets:
       - redis_password
     volumes:
