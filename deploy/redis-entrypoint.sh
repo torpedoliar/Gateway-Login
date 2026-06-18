@@ -2,7 +2,7 @@
 # Redis entrypoint: materialize a runtime redis.conf from the Docker
 # secret so the password is set without being baked into the image or
 # visible in `docker inspect`. Runs once per container start.
-set -eu
+set -e
 
 umask 077
 
