@@ -3,7 +3,7 @@
     All-in-one production deploy for SSO Gateway on Windows + Docker Desktop.
 
 .DESCRIPTION
-    Takes a fresh checkout to a running, healthy production stack in 9 stages.
+    Takes a fresh checkout to a running, healthy production stack in 8 stages.
     Idempotent: re-running on a working host is a no-op (or a fast verify pass).
     Use -Force to override idempotency and re-run every stage.
 
@@ -380,7 +380,7 @@ function Invoke-Setup {
     Write-Step 'Setup wizard'
 
     if (-not (Test-Path $SetupEnvFile)) {
-        throw 'deploy/.setup-env missing. Run -Stage VpsPrefill first (or use -Stage All).'
+        throw 'deploy/.setup-env missing. Re-run -Stage Env first (or use -Stage All).'
     }
 
     if ((Test-SetupComplete) -and -not $Force) {
@@ -388,20 +388,32 @@ function Invoke-Setup {
         return
     }
 
-    # Read VPS_MYSQL_DSN from .setup-env and pass via -e flag.
-    # --env-file is not supported on older Docker Compose versions (< v2.24).
+    # Read VPS_MYSQL_DSN from .setup-env and decompose into SETUP_* env vars.
+    # Passing discrete env vars avoids TTY/STDIN issues with interactive survey
+    # inside the setup container and makes the deploy one-run reliable.
     $vpsDsn = Get-Content $SetupEnvFile -Raw | Select-String -Pattern 'VPS_MYSQL_DSN=(.+)' -AllMatches | ForEach-Object { $_.Matches[0].Groups[1].Value.Trim() }
     if (-not $vpsDsn) {
-        throw 'VPS_MYSQL_DSN not found in deploy/.setup-env. Re-run -Stage VpsPrefill.'
+        throw 'VPS_MYSQL_DSN not found in deploy/.setup-env. Re-run -Stage Env.'
     }
 
-    # Interactive: do NOT redirect stdin. Operator will see the
-    # wizard prompts and type responses.
+    if ($vpsDsn -notmatch '^(?<user>[^:]+):(?<pass>[^@]+)@tcp\((?<host>[^:]+):(?<port>\d+)\)/(?<db>[^?]+)') {
+        throw "Cannot parse VPS_MYSQL_DSN. Expected format: user:pass@tcp(host:port)/db"
+    }
+    $setupHost = $Matches['host']
+    $setupPort = $Matches['port']
+    $setupDb   = $Matches['db']
+    $setupUser = $Matches['user']
+    $setupPwd  = $Matches['pass']
+
     # Service 'setup' has profiles: ["setup"], so we must explicitly enable it.
     Push-Location $DeployDir
     try {
         & docker compose -f $ComposeFile --profile setup run --rm `
-            -e "VPS_MYSQL_DSN=$vpsDsn" `
+            -e "SETUP_HOST=$setupHost" `
+            -e "SETUP_PORT=$setupPort" `
+            -e "SETUP_DATABASE=$setupDb" `
+            -e "SETUP_USERNAME=$setupUser" `
+            -e "SETUP_PASSWORD=$setupPwd" `
             setup
         if ($LASTEXITCODE -ne 0) { throw 'setup wizard exited non-zero' }
     } finally {

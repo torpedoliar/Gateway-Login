@@ -65,6 +65,48 @@ func (SurveyPrompter) Ask(qs []*Question) ([]string, error) {
 	return answers.Out, nil
 }
 
+// EnvPrompter is a Prompter that reads answers from environment variables.
+// It enables unattended / CI-friendly setup when SETUP_HOST, SETUP_PORT,
+// SETUP_DATABASE, SETUP_USERNAME, and SETUP_PASSWORD are provided.
+// SETUP_API_KEY is optional; if empty, a key is auto-generated.
+type EnvPrompter struct{}
+
+// Ask returns answers from SETUP_* environment variables.
+func (EnvPrompter) Ask(qs []*Question) ([]string, error) {
+	answers := make([]string, len(qs))
+	for i, q := range qs {
+		var v string
+		switch q.Name {
+		case "host":
+			v = os.Getenv("SETUP_HOST")
+		case "port":
+			v = os.Getenv("SETUP_PORT")
+			if v == "" {
+				v = "3306"
+			}
+		case "database":
+			v = os.Getenv("SETUP_DATABASE")
+			if v == "" {
+				v = "sja"
+			}
+		case "username":
+			v = os.Getenv("SETUP_USERNAME")
+			if v == "" {
+				v = "sso_replicator"
+			}
+		case "password":
+			v = os.Getenv("SETUP_PASSWORD")
+		case "apiKey":
+			v = os.Getenv("SETUP_API_KEY")
+		}
+		if v == "" && q.Name != "apiKey" {
+			return nil, fmt.Errorf("required env var for %q not set", q.Name)
+		}
+		answers[i] = v
+	}
+	return answers, nil
+}
+
 // GenerateAPIKey returns a fresh, opaque API key. The plaintext is shown
 // to the operator once; only its hash is stored.
 func GenerateAPIKey() (string, error) {

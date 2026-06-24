@@ -39,8 +39,13 @@ func main() {
 
 	existingMaster := os.Getenv("GATEWAY_MASTER_KEY")
 
+	prompter := setup.Prompter(setup.SurveyPrompter{})
+	if os.Getenv("SETUP_HOST") != "" {
+		prompter = setup.EnvPrompter{}
+	}
+
 	storeCfg, apiKey, masterB64, err := setup.RunPromptFlow(
-		ctx, setup.SurveyPrompter{}, cfgPath, envPath, existingMaster,
+		ctx, prompter, cfgPath, envPath, existingMaster,
 	)
 	if err != nil {
 		log.Fatalf("setup: %v", err)
