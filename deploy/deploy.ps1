@@ -363,7 +363,8 @@ function Test-SetupComplete {
     # Both are checked by execing into the running postgres container.
 
     # 1. config.yaml on the gateway-config volume
-    $cfg = docker compose -f $ComposeFile run --rm -T --entrypoint sh setup -c '
+    # The setup service has profiles: ["setup"], so enable it explicitly.
+    $cfg = docker compose -f $ComposeFile --profile setup run --rm -T --entrypoint sh setup -c '
         if [ -f /etc/gateway/config.yaml ]; then echo present; else echo absent; fi
     ' 2>&1 | Select-Object -Last 1
     if ($cfg -ne 'present') { return $false }
@@ -396,9 +397,10 @@ function Invoke-Setup {
 
     # Interactive: do NOT redirect stdin. Operator will see the
     # wizard prompts and type responses.
+    # Service 'setup' has profiles: ["setup"], so we must explicitly enable it.
     Push-Location $DeployDir
     try {
-        & docker compose -f $ComposeFile run --rm `
+        & docker compose -f $ComposeFile --profile setup run --rm `
             -e "VPS_MYSQL_DSN=$vpsDsn" `
             setup
         if ($LASTEXITCODE -ne 0) { throw 'setup wizard exited non-zero' }
