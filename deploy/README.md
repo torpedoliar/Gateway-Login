@@ -103,7 +103,7 @@ Internet
 
 ### Stages (Windows: deploy.ps1)
 
-The Windows deploy script runs nine stages, in order, with skip
+The Windows deploy script runs eight stages, in order, with skip
 conditions. Run a single stage with `-Stage <Name>` (e.g.
 `-Stage Secrets`) or re-run everything with `-Force`.
 
@@ -112,13 +112,12 @@ conditions. Run a single stage with `-Stage <Name>` (e.g.
 | 0 | Preflight  | Docker, OpenSSL, compose file, free disk      |
 | 1 | Secrets    | Random 24/32-byte passwords to deploy/secrets/|
 | 2 | Keys       | RS256 JWT keypair via openssl                 |
-| 3 | .env       | Prompts for VPS_MYSQL_DSN and JWT_ISSUER      |
-| 4 | VpsPrefill | Prompts for VPS host/port/user/password       |
-| 5 | Build      | `docker compose build --pull`                  |
-| 6 | InfraUp    | `up -d postgres redis` + healthcheck wait     |
-| 7 | Setup      | Interactive setup container (API key prompt)   |
-| 8 | StackUp    | `up -d` api/sync/backup + healthcheck wait   |
-| 9 | Verify     | `curl /healthz` + summary                     |
+| 3 | Env        | Prompts for VPS credentials + JWT_ISSUER, writes both `.env` and `.setup-env` |
+| 4 | Build      | `docker compose build --pull`                  |
+| 5 | InfraUp    | `up -d postgres redis` + healthcheck wait     |
+| 6 | Setup      | Interactive setup container (API key prompt)   |
+| 7 | StackUp    | `up -d` api/sync/backup + healthcheck wait   |
+| 8 | Verify     | `curl /healthz` + summary                     |
 
 Logs are written to `deploy/logs/deploy-<UTC-timestamp>.log`.
 

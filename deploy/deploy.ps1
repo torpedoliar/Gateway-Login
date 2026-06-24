@@ -25,7 +25,7 @@
 [CmdletBinding()]
 param(
     [switch]$Force,
-    [ValidateSet('All','Preflight','Secrets','Keys','Env','VpsPrefill','Build','InfraUp','Setup','StackUp','Verify')]
+    [ValidateSet('All','Preflight','Secrets','Keys','Env','Build','InfraUp','Setup','StackUp','Verify')]
     [string]$Stage = 'All'
 )
 
@@ -225,10 +225,10 @@ function Invoke-Keys {
     Write-Log 'JWT keys generated'
 }
 function Invoke-Env {
-    Write-Step '.env'
+    Write-Step '.env + VPS credentials'
 
     Write-Host ''
-    Write-Host '  Required: VPS MySQL DSN (built from parts below).' -ForegroundColor Yellow
+    Write-Host '  VPS MySQL credentials (used by both .env and setup wizard).' -ForegroundColor Yellow
     Write-Host ''
 
     $vpsHost = Read-Host '  VPS host'
@@ -251,7 +251,6 @@ function Invoke-Env {
     [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($vpsBstr)
 
     $dsn = "${vpsUser}:${vpsPwd}@tcp(${vpsHost}:${vpsPort})/${vpsDb}?parseTime=true&readTimeout=30s"
-    $vpsPwd = $null; [System.GC]::Collect()
 
     Write-Host ''
     $iss = Read-Host '  JWT_ISSUER (e.g. https://gateway.example.com)'
@@ -263,66 +262,37 @@ function Invoke-Env {
     $s3b = Read-Host '  S3_BUCKET (optional, blank to skip)'
     $s3e = Read-Host '  S3_ENDPOINT (optional, blank to skip)'
 
-    $content = "VPS_MYSQL_DSN=$dsn`nJWT_ISSUER=$iss`nS3_BUCKET=$s3b`nS3_ENDPOINT=$s3e`n"
+    # Write deploy/.env (used by docker compose global variables)
+    $envContent = "VPS_MYSQL_DSN=$dsn`nJWT_ISSUER=$iss`nS3_BUCKET=$s3b`nS3_ENDPOINT=$s3e`n"
 
     # takeown bypasses restrictive ACLs that icacls /reset cannot fix.
     $null = & takeown /F "$EnvFile" /A 2>$null
     & icacls $EnvFile /grant:r "$($env:USERDOMAIN)\$($env:USERNAME):(R,W)" *>$null 2>$null
     if (Test-Path $EnvFile) { Remove-Item -Path $EnvFile -Force -ErrorAction SilentlyContinue }
-    Set-Content -Path $EnvFile -Value $content -NoNewline -Encoding UTF8
+    Set-Content -Path $EnvFile -Value $envContent -NoNewline -Encoding UTF8
 
     $user = "{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME
     & icacls $EnvFile /inheritance:r /grant:r "${user}:(R,W)" | Out-Null
 
     Write-Ok 'wrote: deploy/.env (ACL restricted)'
-    Write-Log '.env written'
-}
-function Invoke-VpsPrefill {
-    Write-Step 'VPS prefill (for setup wizard)'
 
-    Write-Host ''
-    Write-Host '  VPS MySQL credentials. The setup container will use these to connect,' -ForegroundColor Yellow
-    Write-Host '  encrypt the password with the master key, and write /etc/gateway/config.yaml.' -ForegroundColor Yellow
-    Write-Host ''
+    # Write deploy/.setup-env (used by setup wizard container)
+    # Same VPS_MYSQL_DSN, different file for isolation.
+    $setupEnvContent = "VPS_MYSQL_DSN=$dsn`n"
 
-    $host_ = Read-Host '  VPS host (e.g. vps.your-domain.com)'
-    if (-not $host_) { throw 'VPS host is required.' }
-
-    $port = Read-Host '  VPS MySQL port [3306]'
-    if (-not $port) { $port = '3306' }
-    if ($port -notmatch '^\d+$') { throw "Port must be numeric. Got: $port" }
-
-    $db = Read-Host '  Database name [sja]'
-    if (-not $db) { $db = 'sja' }
-
-    $user = Read-Host '  Username [sso_replicator]'
-    if (-not $user) { $user = 'sso_replicator' }
-
-    $sec = Read-Host '  Password' -AsSecureString
-    if (-not $sec) { throw 'VPS password is required.' }
-    $bstr = [System.Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
-    $pwd  = [System.Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr)
-    [System.Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-
-    # Build a DSN that the setup container can consume.
-    $dsn = "${user}:${pwd}@tcp(${host_}:${port})/${db}?parseTime=true&readTimeout=30s"
-    $setupEnv = "VPS_MYSQL_DSN=$dsn`n"
-
-    # takeown bypasses restrictive ACLs that icacls /reset cannot fix.
     $null = & takeown /F "$SetupEnvFile" /A 2>$null
     & icacls $SetupEnvFile /grant:r "$($env:USERDOMAIN)\$($env:USERNAME):(R,W)" *>$null 2>$null
     if (Test-Path $SetupEnvFile) { Remove-Item -Path $SetupEnvFile -Force -ErrorAction SilentlyContinue }
-    Set-Content -Path $SetupEnvFile -Value $setupEnv -NoNewline -Encoding UTF8
+    Set-Content -Path $SetupEnvFile -Value $setupEnvContent -NoNewline -Encoding UTF8
 
-    $currentUser = "{0}\{1}" -f $env:USERDOMAIN, $env:USERNAME
-    & icacls $SetupEnvFile /inheritance:r /grant:r "${currentUser}:(R,W)" | Out-Null
+    & icacls $SetupEnvFile /inheritance:r /grant:r "${user}:(R,W)" | Out-Null
 
-    # Wipe the in-memory password ASAP.
-    $pwd = $null
-    [System.GC]::Collect()
+    Write-Ok 'wrote: deploy/.setup-env (ACL restricted)'
 
-    Write-Ok "wrote: deploy/.setup-env (ACL restricted, contains VPS DSN)"
-    Write-Log 'VpsPrefill written'
+    # Wipe password from memory
+    $vpsPwd = $null; [System.GC]::Collect()
+
+    Write-Log '.env + .setup-env written'
 }
 function Invoke-Build {
     Write-Step 'Build images'
@@ -541,7 +511,6 @@ try {
         Invoke-Secrets
         Invoke-Keys
         Invoke-Env
-        Invoke-VpsPrefill
         Invoke-Build
         Invoke-InfraUp
         Invoke-Setup
@@ -552,7 +521,6 @@ try {
             'Secrets'    { Invoke-Secrets }
             'Keys'       { Invoke-Keys }
             'Env'        { Invoke-Env }
-            'VpsPrefill' { Invoke-VpsPrefill }
             'Build'      { Invoke-Build }
             'InfraUp'    { Invoke-InfraUp }
             'Setup'      { Invoke-Setup }
