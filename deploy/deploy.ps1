@@ -417,12 +417,19 @@ function Invoke-Setup {
         return
     }
 
+    # Read VPS_MYSQL_DSN from .setup-env and pass via -e flag.
+    # --env-file is not supported on older Docker Compose versions (< v2.24).
+    $vpsDsn = Get-Content $SetupEnvFile -Raw | Select-String -Pattern 'VPS_MYSQL_DSN=(.+)' -AllMatches | ForEach-Object { $_.Matches[0].Groups[1].Value.Trim() }
+    if (-not $vpsDsn) {
+        throw 'VPS_MYSQL_DSN not found in deploy/.setup-env. Re-run -Stage VpsPrefill.'
+    }
+
     # Interactive: do NOT redirect stdin. Operator will see the
     # wizard prompts and type responses.
     Push-Location $DeployDir
     try {
         & docker compose -f $ComposeFile run --rm `
-            --env-file $SetupEnvFile `
+            -e "VPS_MYSQL_DSN=$vpsDsn" `
             setup
         if ($LASTEXITCODE -ne 0) { throw 'setup wizard exited non-zero' }
     } finally {
