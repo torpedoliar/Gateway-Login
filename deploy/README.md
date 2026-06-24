@@ -17,7 +17,7 @@ The script is idempotent. It will prompt for VPS MySQL credentials
 and an API key during the setup wizard, then bring up the full
 stack. Re-running on a healthy host is a no-op.
 
-### Linux
+### Linux (manual)
 
 ```sh
 git clone <your-fork> /opt/sso-gateway && cd /opt/sso-gateway
@@ -27,6 +27,27 @@ docker compose -f deploy/docker-compose.prod.yml up -d postgres redis
 docker compose -f deploy/docker-compose.prod.yml run --rm setup
 # Save the printed API key
 docker compose -f deploy/docker-compose.prod.yml up -d
+```
+
+### Remote deploy via SSH (Windows)
+
+```powershell
+# From your Windows machine — no need to SSH manually
+.\deploy\deploy-ssh.ps1 -Host "root@your-vps.example.com" -Port 22
+```
+
+The script will:
+1. Sync files to the remote host (rsync)
+2. Bootstrap secrets + JWT keys on the remote
+3. Prompt for VPS MySQL credentials
+4. Build Docker images on the remote
+5. Start postgres + redis and wait for healthy
+6. Run the interactive setup wizard (via SSH TTY)
+7. Start the full stack and verify healthz
+
+For a non-interactive update (after initial setup):
+```powershell
+.\deploy\deploy-ssh.ps1 -Host "root@your-vps.example.com" -SkipSetup -Force
 ```
 
 ## Architecture
