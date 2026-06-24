@@ -304,7 +304,9 @@ function Invoke-Build {
         # same applies to any docker subcommand that emits progress
         # (build, pull). Suppress stderr in the cmd /c shell so
         # $LASTEXITCODE reflects real failure only.
-        cmd /c "docker compose -f `"$ComposeFile`" build --pull 1>nul 2>nul" | Out-Null
+        # Build all images INCLUDING the setup service (profiles: ["setup"]).
+        # Profile flag must precede -f for compatibility with Docker Compose v5.
+        cmd /c "docker compose --profile setup -f `"$ComposeFile`" build --pull 1>nul 2>nul" | Out-Null
         if ($LASTEXITCODE -ne 0) { throw 'docker compose build failed' }
     } finally {
         Pop-Location
@@ -364,7 +366,7 @@ function Test-SetupComplete {
 
     # 1. config.yaml on the gateway-config volume
     # The setup service has profiles: ["setup"], so enable it explicitly.
-    $cfg = docker compose -f $ComposeFile --profile setup run --rm -T --entrypoint sh setup -c '
+    $cfg = docker compose --profile setup -f $ComposeFile run --rm -T --entrypoint sh setup -c '
         if [ -f /etc/gateway/config.yaml ]; then echo present; else echo absent; fi
     ' 2>&1 | Select-Object -Last 1
     if ($cfg -ne 'present') { return $false }
@@ -406,9 +408,13 @@ function Invoke-Setup {
     $setupPwd  = $Matches['pass']
 
     # Service 'setup' has profiles: ["setup"], so we must explicitly enable it.
+    # Profile flag must precede -f for compatibility with Docker Compose v5.
     Push-Location $DeployDir
     try {
-        & docker compose -f $ComposeFile --profile setup run --rm `
+        # Remove any stale setup container from previous failed attempts.
+        cmd /c "docker compose --profile setup -f `"$ComposeFile`" rm -f setup 1>nul 2>nul" | Out-Null
+
+        & docker compose --profile setup -f $ComposeFile run --rm `
             -e "SETUP_HOST=$setupHost" `
             -e "SETUP_PORT=$setupPort" `
             -e "SETUP_DATABASE=$setupDb" `
